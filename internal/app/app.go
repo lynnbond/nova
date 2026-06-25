@@ -493,7 +493,12 @@ func (a *App) handleLoadDesign(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build response
+	// Build response: map act IDs to names
+	actIDToName := make(map[string]string, len(acts))
+	for _, act := range acts {
+		actIDToName[act.ID] = act.Name
+	}
+
 	var actItems []map[string]any
 	for _, act := range acts {
 		item := map[string]any{
@@ -509,9 +514,17 @@ func (a *App) handleLoadDesign(w http.ResponseWriter, r *http.Request) {
 
 	var linkItems []map[string]any
 	for _, link := range links {
+		fromName := actIDToName[link.PrevActID]
+		if fromName == "" {
+			fromName = link.PrevActID
+		}
+		toName := actIDToName[link.ActID]
+		if toName == "" {
+			toName = link.ActID
+		}
 		linkItems = append(linkItems, map[string]any{
-			"from": link.PrevActID,
-			"to":   link.ActID,
+			"from": fromName,
+			"to":   toName,
 		})
 	}
 
