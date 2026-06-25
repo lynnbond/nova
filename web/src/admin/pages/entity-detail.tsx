@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   FileText, Clock, CheckCircle2, Circle, Loader2,
-  SendHorizonal, Activity, ListTodo, History, MessageSquare,
+  SendHorizonal, Activity, ListTodo, History, MessageSquare, Undo2,
   X,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { authHeaders } from "@/lib/auth";
 
-const API_BASE = "http://localhost:8080/api/v1";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1";
 
 interface Task {
   id: string;  // UUID
@@ -94,6 +94,9 @@ export function EntityDetailModal({ entityId, onClose }: Props) {
   const [selectedActId, setSelectedActId] = useState<string | null>(null);
   const [submitMsg, setSubmitMsg] = useState<string | null>(null);
   const [opinionContent, setOpinionContent] = useState("");
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
+  const [returning, setReturning] = useState(false);
 
   const fetchDetail = useCallback(async () => {
     if (!entityId) return;
@@ -144,6 +147,32 @@ export function EntityDetailModal({ entityId, onClose }: Props) {
       setSubmitMsg("提交失败，请重试");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReturn = async () => {
+    if (!entity) return;
+    setReturning(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (returnReason.trim()) {
+        body.opinion_content = returnReason.trim();
+      }
+      const res = await fetch(`${API_BASE}/entities/${entity.id}/return`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setReturnOpen(false);
+      setReturnReason("");
+      setSubmitMsg("✅ 退回成功");
+      fetchDetail();
+    } catch (err) {
+      console.error("Failed to return:", err);
+      setSubmitMsg("退回失败，请重试");
+    } finally {
+      setReturning(false);
     }
   };
 
@@ -350,6 +379,10 @@ export function EntityDetailModal({ entityId, onClose }: Props) {
                             )}
                             提交流转
                           </Button>
+                          <Button variant="outline" onClick={() => setReturnOpen(true)}>
+                            <Undo2 className="h-4 w-4 mr-1" />
+                            退回
+                          </Button>
                           {submitMsg && (
                             <span className={`text-sm ${submitMsg.includes("成功") ? "text-green-600" : "text-red-500"}`}>
                               {submitMsg}
@@ -376,6 +409,10 @@ export function EntityDetailModal({ entityId, onClose }: Props) {
                               <SendHorizonal className="h-4 w-4 mr-1" />
                             )}
                             提交流转
+                          </Button>
+                          <Button variant="outline" onClick={() => setReturnOpen(true)}>
+                            <Undo2 className="h-4 w-4 mr-1" />
+                            退回
                           </Button>
                           {submitMsg && (
                             <span className={`ml-3 text-sm ${submitMsg.includes("成功") ? "text-green-600" : "text-red-500"}`}>
@@ -477,6 +514,34 @@ export function EntityDetailModal({ entityId, onClose }: Props) {
           </div>
         </ScrollArea>
       </DialogContent>
+
+      {/* Return Reason Dialog */}
+      <Dialog open={returnOpen} onOpenChange={setReturnOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>退回工单</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">请填写退回原因，工单将返回起草环节。</p>
+            <textarea
+              value={returnReason}
+              onChange={(e) => setReturnReason(e.target.value)}
+              placeholder="请输入退回原因..."
+              className="w-full rounded-lg border border-slate-200 bg-white p-3 text-sm min-h-[100px] resize-y focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+              autoFocus
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => { setReturnOpen(false); setReturnReason(""); }}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleReturn} disabled={returning}>
+              {returning ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Undo2 className="h-4 w-4 mr-1" />}
+              确认退回
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

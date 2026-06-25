@@ -20,13 +20,22 @@ import (
 	"github.com/liyan/nova/internal/app"
 )
 
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func main() {
-	dbPath := flag.String("db", "nova.db", "path to SQLite database")
+	dbPath := flag.String("db", getEnv("NOVA_DB_PATH", "nova.db"), "path to SQLite database")
 	port := flag.Int("port", 8080, "HTTP server port")
+	jwtSecret := flag.String("jwt-secret", getEnv("NOVA_JWT_SECRET", ""), "JWT signing secret (default: use dev-only default)")
 	flag.Parse()
 
 	a, err := app.New(app.Config{
-		DBPath: *dbPath,
+		DBPath:    *dbPath,
+		JWTSecret: *jwtSecret,
 	})
 	if err != nil {
 		log.Fatalf("app init: %v", err)

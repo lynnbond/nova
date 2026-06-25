@@ -812,6 +812,10 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 func (a *App) handleListEntities(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Parse query params
+	q := r.URL.Query().Get("q")
+	proAlias := r.URL.Query().Get("pro_alias")
+
 	// Parse optional state filter
 	stateStr := r.URL.Query().Get("state")
 	var stateFilter *int
@@ -820,13 +824,28 @@ func (a *App) handleListEntities(w http.ResponseWriter, r *http.Request) {
 		stateFilter = &sv
 	}
 
-	entities, err := a.st.ListEntities(ctx, stateFilter)
+	// Parse pagination
+	page, limit := 1, 50
+	if p := r.URL.Query().Get("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+
+	entities, total, err := a.st.SearchEntities(ctx, q, proAlias, stateFilter, page, limit)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Build proID → proName map for all referenced pros
+	// Build proID → proName map
 	proNameByID := make(map[string]string)
 	for _, e := range entities {
 		if _, ok := proNameByID[e.ProID]; !ok {
@@ -859,8 +878,15 @@ func (a *App) handleListEntities(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: e.CreatedAt.Format("2006-01-02 15:04"),
 		})
 	}
-	if list == nil { list = []entityItem{} }
-	writeJSON(w, http.StatusOK, map[string]any{"entities": list})
+	if list == nil {
+		list = []entityItem{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entities": list,
+		"total":    total,
+		"page":     page,
+		"limit":    limit,
+	})
 }
 
 func (a *App) handleCreateEntity(w http.ResponseWriter, r *http.Request) {

@@ -19,7 +19,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { authHeaders } from "@/lib/auth";
 
-const API_BASE = "http://localhost:8080/api/v1";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1";
 
 /* ─── Types ─────────────────────────────────────────── */
 type ActTypeLabel = "START" | "MANUAL" | "ROUTER" | "CONVERGE" | "WAIT" | "END";

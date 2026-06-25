@@ -5,9 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { authHeaders } from "@/lib/auth";
+import { authHeaders, useAuth } from "@/lib/auth";
 
-const API_BASE = "http://localhost:8080/api/v1";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1";
 
 interface TodoItem {
   id: string;  // UUID
@@ -23,6 +23,7 @@ interface TodoItem {
 
 export function TodosPage() {
   const { t } = useI18n();
+  const { user } = useAuth();
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState<string | null>(null);
@@ -31,7 +32,8 @@ export function TodosPage() {
   const fetchTodos = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/todos?handler=user_001`, { headers: { ...authHeaders() } });
+      const handler = user?.uid || "user_001";
+      const res = await fetch(`${API_BASE}/todos?handler=${encodeURIComponent(handler)}`, { headers: { ...authHeaders() } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setTodos(data.todos ?? []);

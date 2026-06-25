@@ -4,9 +4,9 @@ import { useI18n } from "@/lib/i18n";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { authHeaders } from "@/lib/auth";
+import { authHeaders, useAuth } from "@/lib/auth";
 
-const API_BASE = "http://localhost:8080/api/v1";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1";
 
 interface OutboxItem {
   id: string;  // UUID
@@ -22,16 +22,18 @@ interface OutboxItem {
 
 export function OutboxPage() {
   const { t } = useI18n();
+  const { user } = useAuth();
   const [items, setItems] = useState<OutboxItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchOutbox = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/outbox?handler=user_001`, { headers: { ...authHeaders() } });
+      const handler = user?.uid || "user_001";
+      const res = await fetch(`${API_BASE}/outbox?handler=${encodeURIComponent(handler)}`, { headers: { ...authHeaders() } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setOutbox(data.outbox ?? []);
+      setItems(data.outbox ?? []);
     } catch (err) {
       console.error("Failed to fetch outbox:", err);
       setItems([]);

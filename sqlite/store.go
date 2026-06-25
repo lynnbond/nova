@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -1260,6 +1261,64 @@ func (s *Store) GetEntityHandleLogs(ctx context.Context, entityID string) ([]*no
 		logs = append(logs, &l)
 	}
 	return logs, nil
+}
+
+// SearchEntities searches and paginates entities with optional keyword, pro_alias, and state filter.
+// Returns the matching entities and the total count (before pagination).
+func (s *Store) SearchEntities(ctx context.Context, q, proAlias string, stateFilter *int, page, limit int) ([]*nova.Entity, int, error) {
+	baseQuery := `SELECT e.id, e.code, e.pro_id, e.pro_ver, e.title, e.state,
+		e.draft_uid, e.draft_name, e.draft_dept, e.parent_id, e.serial_num,
+		e.send_at, e.over_at, e.created_at, e.updated_at FROM entity e`
+	countQuery := `SELECT COUNT(*) FROM entity e`
+	var whereClauses []string
+	var args []any
+
+	if stateFilter != nil {
+		whereClauses = append(whereClauses, "e.state = ?")
+		args = append(args, *stateFilter)
+	}
+	if proAlias != "" {
+		whereClauses = append(whereClauses, "e.pro_id IN (SELECT id FROM pro WHERE alias = ?)")
+		args = append(args, proAlias)
+	}
+	if q != "" {
+		whereClauses = append(whereClauses, "(e.title LIKE ? OR e.serial_num LIKE ? OR e.code LIKE ?)")
+		like := "%" + q + "%"
+		args = append(args, like, like, like)
+	}
+
+	where := ""
+	if len(whereClauses) > 0 {
+		where = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Count total
+	var total int
+	countSQL := countQuery + where
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Query with pagination
+	offset := (page - 1) * limit
+	sql := baseQuery + where + " ORDER BY e.seq DESC LIMIT ? OFFSET ?"
+	queryArgs := append(append([]any{}, args...), limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, sql, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var entities []*nova.Entity
+	for rows.Next() {
+		e, err := scanEntity(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		entities = append(entities, e)
+	}
+	return entities, total, nil
 }
 
 // ListEntities lists all entities, optionally filtered by state.
