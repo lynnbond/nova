@@ -832,7 +832,7 @@ func (s *Store) CreateAct(ctx context.Context, a *nova.Act) error {
 		a.ID, a.Seq, a.ProID, a.Name, a.Title, a.Type, a.Ver, editable, force, waiActs)
 	return err
 }
-
+// CreateLink creates a new act_link record.
 func (s *Store) CreateLink(ctx context.Context, l *nova.Link) error {
 	// act_link id is TEXT PRIMARY KEY in schema, but Link.ID is int64 in types.go
 	// (cannot modify types.go). We store the sequential integer as a text string,
@@ -852,6 +852,122 @@ func (s *Store) CreateLink(ctx context.Context, l *nova.Link) error {
 	}
 	l.ID = nextID
 	return nil
+}
+
+// ─── Process Design / Management ──────────────────────────────────────────────
+
+func (s *Store) ListPros(ctx context.Context) ([]*nova.Pro, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, seq, alias, name, ver, channel FROM process ORDER BY seq`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pros []*nova.Pro
+	for rows.Next() {
+		p := &nova.Pro{}
+		if err := rows.Scan(&p.ID, &p.Seq, &p.Alias, &p.Name, &p.Ver, &p.Channel); err != nil {
+			return nil, err
+		}
+		pros = append(pros, p)
+	}
+	if pros == nil {
+		pros = []*nova.Pro{}
+	}
+	return pros, rows.Err()
+}
+
+func (s *Store) DeletePro(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Delete man_rules for acts under this process
+	_, _ = s.db.ExecContext(ctx,
+		`DELETE FROM man_rule WHERE act_id IN (SELECT id FROM act WHERE pro_id = ?)`, id)
+
+	// Delete act_links for all pro_vers under this process
+	_, _ = s.db.ExecContext(ctx,
+		`DELETE FROM act_link WHERE pro_ver_id IN (SELECT id FROM pro_ver WHERE pro_id = ?)`, id)
+
+	// Delete acts
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM act WHERE pro_id = ?`, id)
+
+	// Delete pro_vers
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM pro_ver WHERE pro_id = ?`, id)
+
+	// Delete process
+	_, err := s.db.ExecContext(ctx, `DELETE FROM process WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) DeleteActsByProVer(ctx context.Context, proVerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get pro_id from pro_ver
+	var proID string
+	err := s.db.QueryRowContext(ctx, `SELECT pro_id FROM pro_ver WHERE id = ?`, proVerID).Scan(&proID)
+	if err != nil {
+		return err
+	}
+
+	// Delete man_rules for acts under this process
+	_, _ = s.db.ExecContext(ctx,
+		`DELETE FROM man_rule WHERE act_id IN (SELECT id FROM act WHERE pro_id = ?)`, proID)
+
+	// Delete acts
+	_, err = s.db.ExecContext(ctx, `DELETE FROM act WHERE pro_id = ?`, proID)
+	return err
+}
+
+func (s *Store) DeleteLinksByProVer(ctx context.Context, proVerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM act_link WHERE pro_ver_id = ?`, proVerID)
+	return err
+}
+
+func (s *Store) DeleteManRulesByAct(ctx context.Context, actID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM man_rule WHERE act_id = ?`, actID)
+	return err
+}
+
+func (s *Store) UpdatePro(ctx context.Context, p *nova.Pro) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE process SET name = ?, ver = ?, channel = ? WHERE id = ?`,
+		p.Name, p.Ver, p.Channel, p.ID)
+	return err
+}
+
+func (s *Store) ListProVers(ctx context.Context, proID string) ([]*nova.ProVer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, seq, pro_id, ver, is_release FROM pro_ver WHERE pro_id = ? ORDER BY ver`, proID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pvs []*nova.ProVer
+	for rows.Next() {
+		pv := &nova.ProVer{}
+		var release int
+		if err := rows.Scan(&pv.ID, &pv.Seq, &pv.ProID, &pv.Ver, &release); err != nil {
+			return nil, err
+		}
+		pv.IsRelease = release != 0
+		pvs = append(pvs, pv)
+	}
+	if pvs == nil {
+		pvs = []*nova.ProVer{}
+	}
+	return pvs, rows.Err()
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

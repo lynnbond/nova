@@ -16,6 +16,16 @@ type Store interface {
 	GetManRule(ctx context.Context, actID string) (*ManRule, error)
 	GetFirstAct(ctx context.Context, proID string, proVer int) (*Act, error)
 
+	// ── Process Design / Management ──────────────────────────────────────
+
+	ListPros(ctx context.Context) ([]*Pro, error)
+	DeletePro(ctx context.Context, id string) error
+	DeleteActsByProVer(ctx context.Context, proVerID string) error
+	DeleteLinksByProVer(ctx context.Context, proVerID string) error
+	DeleteManRulesByAct(ctx context.Context, actID string) error
+	UpdatePro(ctx context.Context, p *Pro) error
+	ListProVers(ctx context.Context, proID string) ([]*ProVer, error)
+
 	// ── Entity ──────────────────────────────────────────────────────────
 
 	CreateEntity(ctx context.Context, e *Entity) error

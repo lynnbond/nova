@@ -1,8 +1,8 @@
-import { useState, useCallback, useMemo, type ComponentProps } from "react";
+import { useState, useEffect, useCallback, type ComponentProps } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft, CirclePlay, CircleStop, FileEdit, GitFork, GitMerge,
-  Hourglass, Plus, X, Save, Send,
+  Hourglass, Plus, X, Save, Send, Loader2,
 } from "lucide-react";
 import {
   ReactFlow, Background, Controls, MiniMap, Handle, Position,
@@ -17,6 +17,9 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { authHeaders } from "@/lib/auth";
+
+const API_BASE = "http://localhost:8080/api/v1";
 
 /* ─── Types ─────────────────────────────────────────── */
 type ActTypeLabel = "START" | "MANUAL" | "ROUTER" | "CONVERGE" | "WAIT" | "END";
@@ -31,6 +34,20 @@ interface FlowNodeData {
   requireOpinion?: boolean;
 }
 
+interface ActDef {
+  name: string;
+  title: string;
+  type: number;
+  policy?: number;
+  handler?: string;
+  groups?: string;
+}
+
+interface LinkDef {
+  from: string;
+  to: string;
+}
+
 const nodeTypeMeta: Record<ActTypeLabel, { label: string; color: string; bg: string; border: string; icon: typeof CirclePlay }> = {
   START:    { label: "开始", color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-300", icon: CirclePlay },
   MANUAL:   { label: "人工", color: "text-blue-600", bg: "bg-blue-50", border: "border-blue-300", icon: FileEdit },
@@ -39,6 +56,14 @@ const nodeTypeMeta: Record<ActTypeLabel, { label: string; color: string; bg: str
   WAIT:     { label: "等待", color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-300", icon: Hourglass },
   END:      { label: "结束", color: "text-rose-600", bg: "bg-rose-50", border: "border-rose-300", icon: CircleStop },
 };
+
+const ACT_TYPE_MAP: Record<string, number> = {
+  START: 0, MANUAL: 1, ROUTER: 3, CONVERGE: 4, WAIT: 5, TAIL: 6, END: 100,
+};
+const POLICY_MAP: Record<string, number | undefined> = {
+  single: 10, exclusive: 21, concurrent: 22,
+};
+const REV_POLICY: Record<number, string> = { 10: "single", 21: "exclusive", 22: "concurrent" };
 
 /* ─── Custom Node ──────────────────────────────────── */
 function FlowNode({ data, selected }: NodeProps<FlowNodeData>) {
@@ -49,14 +74,12 @@ function FlowNode({ data, selected }: NodeProps<FlowNodeData>) {
   if (isTerminal) {
     return (
       <div className="relative flex flex-col items-center">
-        {/* Connection Handles */}
         {data.type !== "START" && (
           <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border !border-slate-300 !bg-white" />
         )}
         {data.type !== "END" && (
           <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border !border-slate-300 !bg-white" />
         )}
-
         <div className={cn(
           "flex h-6 w-6 items-center justify-center rounded-full ring-1 transition-all",
           meta.bg, meta.border.replace("border-", "ring-"),
@@ -77,14 +100,12 @@ function FlowNode({ data, selected }: NodeProps<FlowNodeData>) {
       )}
       style={{ minWidth: 38 }}
     >
-      {/* Connection Handles */}
       {data.type !== "START" && (
         <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border !border-slate-300 !bg-white" />
       )}
       {data.type !== "END" && (
         <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border !border-slate-300 !bg-white" />
       )}
-
       <div className={cn("mx-auto flex h-4 w-4 items-center justify-center rounded-md", meta.bg, "ring-1", meta.border.replace("border-", "ring-"))}>
         <Icon className={cn("h-2.5 w-2.5", meta.color)} />
       </div>
@@ -106,18 +127,55 @@ let seed = 0;
 function nid() { return `n_${++seed}`; }
 function eid() { return `e_${++seed}`; }
 
-function buildInitialNodes(): [Node<FlowNodeData>[], Edge[]] {
-  const nodes: Node<FlowNodeData>[] = [
-    { id: nid(), type: "flowNode", position: { x: 0, y: 0 }, data: { label: "开始", actName: "start", type: "START" } },
-    { id: nid(), type: "flowNode", position: { x: 0, y: 40 }, data: { label: "起草申请", actName: "draft", type: "MANUAL", handler: "申请人", policy: "single" } },
-    { id: nid(), type: "flowNode", position: { x: 0, y: 80 }, data: { label: "审批", actName: "approve", type: "MANUAL", handler: "审批人", policy: "single" } },
-    { id: nid(), type: "flowNode", position: { x: 0, y: 120 }, data: { label: "结束", actName: "end", type: "END" } },
-  ];
-  const edges: Edge[] = [
-    { id: eid(), source: nodes[0].id, target: nodes[1].id, type: "smoothstep", animated: true, markerEnd: { type: MarkerType.ArrowClosed, color: "#94a3b8" }, style: { stroke: "#94a3b8", strokeWidth: 2 } },
-    { id: eid(), source: nodes[1].id, target: nodes[2].id, type: "smoothstep", animated: true, markerEnd: { type: MarkerType.ArrowClosed, color: "#94a3b8" }, style: { stroke: "#94a3b8", strokeWidth: 2 } },
-    { id: eid(), source: nodes[2].id, target: nodes[3].id, type: "smoothstep", animated: true, markerEnd: { type: MarkerType.ArrowClosed, color: "#94a3b8" }, style: { stroke: "#94a3b8", strokeWidth: 2 } },
-  ];
+function makeNodesAndEdges(acts: ActDef[], links: LinkDef[]): [Node<FlowNodeData>[], Edge[]] {
+  seed = 0;
+  const actNameToType: Record<string, ActTypeLabel> = {
+    "start": "START", "end": "END",
+  };
+  const nodes: Node<FlowNodeData>[] = [];
+  const nodeMap: Record<string, string> = {}; // actName → nodeId
+  const typeOrder: ActTypeLabel[] = ["START", "MANUAL", "ROUTER", "CONVERGE", "WAIT", "TAIL", "END"];
+
+  // Convert type number to label
+  const typeNumToLabel: Record<number, ActTypeLabel> = {
+    0: "START", 1: "MANUAL", 3: "ROUTER", 4: "CONVERGE", 5: "WAIT", 6: "TAIL", 100: "END",
+  };
+
+  acts.forEach((a, i) => {
+    const type = actNameToType[a.name] || typeNumToLabel[a.type] || "MANUAL";
+    actNameToType[a.name] = type;
+    const nodeId = nid();
+    nodeMap[a.name] = nodeId;
+    nodes.push({
+      id: nodeId,
+      type: "flowNode",
+      position: { x: (i * 140) % 420, y: Math.floor(i / 3) * 100 + 40 },
+      data: {
+        label: a.title,
+        actName: a.name,
+        type,
+        handler: a.handler || "",
+        policy: a.policy ? (REV_POLICY[a.policy] as any) || "single" : "single",
+        groups: a.groups || "",
+      },
+    });
+  });
+
+  const edges: Edge[] = links.map((l) => {
+    const src = nodeMap[l.from];
+    const dst = nodeMap[l.to];
+    if (!src || !dst) return null as any;
+    return {
+      id: eid(),
+      source: src,
+      target: dst,
+      type: "smoothstep",
+      animated: true,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#94a3b8" },
+      style: { stroke: "#94a3b8", strokeWidth: 2 },
+    };
+  }).filter(Boolean);
+
   return [nodes, edges];
 }
 
@@ -125,22 +183,46 @@ function buildInitialNodes(): [Node<FlowNodeData>[], Edge[]] {
 export function ProcessDesignerPage() {
   const { alias } = useParams({ strict: false });
   const navigate = useNavigate();
-  const [processName, setProcessName] = useState(
-    alias === "new" ? "新流程" : { OP: "OP申请单", LEAVE: "请假流程" }[alias as string] || alias
-  );
+  const [processName, setProcessName] = useState("新流程");
   const [version, setVersion] = useState(1);
   const [publishState, setPublishState] = useState<"draft" | "published">("draft");
+  const [proAlias, setProAlias] = useState(alias || "new");
+  const [loading, setLoading] = useState(alias !== "new");
+  const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [msg, setMsg] = useState("");
 
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<Node<FlowNodeData> | null>(null);
 
-  // Init
-  useState(() => {
-    const [ns, es] = buildInitialNodes();
-    setNodes(ns);
-    setEdges(es);
-  });
+  // Load existing process design from API
+  useEffect(() => {
+    if (!alias || alias === "new") {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setProAlias(alias);
+    fetch(`${API_BASE}/processes/${alias}/design`, { headers: { ...authHeaders() } })
+      .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then((data) => {
+        const p = data.process;
+        setProcessName(p.name);
+        setVersion(p.ver);
+        setPublishState("draft");
+        if (data.acts && data.acts.length > 0) {
+          const [ns, es] = makeNodesAndEdges(data.acts, data.links || []);
+          setNodes(ns);
+          setEdges(es);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load process design:", err);
+        setMsg("加载失败: " + err.message);
+      })
+      .finally(() => setLoading(false));
+  }, [alias, setNodes, setEdges]);
 
   const onConnect = useCallback(
     (conn: Connection) => setEdges((eds) => addEdge({
@@ -169,7 +251,6 @@ export function ProcessDesignerPage() {
       data: { label: `${nodeTypeMeta[type].label}${count}`, actName: `${type.toLowerCase()}${count}`, type, policy: "single" },
     };
     setNodes((nds) => [...nds, newNode]);
-    // Auto-connect from last node
     const lastNode = nodes[nodes.length - 1];
     if (lastNode) {
       setEdges((eds) => [...eds, {
@@ -199,7 +280,95 @@ export function ProcessDesignerPage() {
     setSelectedNode((prev) => prev ? { ...prev, data: { ...prev.data, ...updates } } : null);
   }
 
+  // Serialize canvas to API format
+  function serializeDesign(): { acts: ActDef[]; links: LinkDef[] } {
+    // Build nodeId → actName & act data
+    const nodeMap: Record<string, { actName: string; data: FlowNodeData }> = {};
+    nodes.forEach((n) => {
+      nodeMap[n.id] = { actName: n.data.actName, data: n.data };
+    });
+    const acts: ActDef[] = nodes.map((n) => {
+      const d = n.data;
+      const typeNum = ACT_TYPE_MAP[d.type] ?? 1;
+      return {
+        name: d.actName,
+        title: d.label,
+        type: typeNum,
+        policy: POLICY_MAP[d.policy || "single"] || 10,
+        handler: d.handler || "",
+        groups: d.groups || "",
+      };
+    });
+    const links: LinkDef[] = edges
+      .map((e) => {
+        const from = nodeMap[e.source]?.actName;
+        const to = nodeMap[e.target]?.actName;
+        return from && to ? { from, to } : null;
+      })
+      .filter(Boolean) as LinkDef[];
+    return { acts, links };
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setMsg("");
+    try {
+      const design = serializeDesign();
+      const body = JSON.stringify({ name: processName, ...design });
+      const targetAlias = proAlias === "new" ? "" : proAlias;
+      const url = targetAlias
+        ? `${API_BASE}/processes/${targetAlias}/design`
+        : `${API_BASE}/processes/design`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body,
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+      const data = await res.json();
+      if (data.process) {
+        setProAlias(data.process.alias);
+        setVersion(data.ver || data.process.ver);
+      }
+      setMsg("✅ 保存成功");
+    } catch (err: any) {
+      setMsg("❌ 保存失败: " + (err.message || ""));
+      console.error("Save failed:", err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handlePublish() {
+    setPublishing(true);
+    setMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/processes/${proAlias}/publish`, {
+        method: "POST",
+        headers: { ...authHeaders() },
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      setPublishState("published");
+      setMsg("✅ 发布成功");
+    } catch (err: any) {
+      setMsg("❌ 发布失败: " + (err.message || ""));
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   const addableTypes: ActTypeLabel[] = ["MANUAL", "ROUTER", "CONVERGE", "WAIT"];
+
+  if (loading) {
+    return (
+      <div className="flex h-[calc(100vh-5rem)] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-[calc(100vh-5rem)] gap-0 overflow-hidden">
@@ -224,7 +393,12 @@ export function ProcessDesignerPage() {
             {publishState === "published" ? "已发布" : "草稿"}
           </Badge>
 
-          <Badge variant="secondary" className="font-mono text-xs">{alias}</Badge>
+          <Badge variant="secondary" className="font-mono text-xs">{proAlias}</Badge>
+
+          {/* Status message */}
+          {msg && (
+            <span className={cn("text-xs", msg.includes("✅") ? "text-green-600" : "text-red-500")}>{msg}</span>
+          )}
 
           <div className="ml-auto flex gap-1.5">
             {addableTypes.map((t) => {
@@ -240,8 +414,14 @@ export function ProcessDesignerPage() {
           </div>
 
           <div className="flex gap-1.5 border-l border-border/60 pl-3">
-            <Button size="xs" variant="outline"><Save className="h-3.5 w-3.5" /> 保存</Button>
-            <Button size="xs"><Send className="h-3.5 w-3.5" /> 发布</Button>
+            <Button size="xs" variant="outline" onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              保存
+            </Button>
+            <Button size="xs" onClick={handlePublish} disabled={publishing || publishState === "published"}>
+              {publishing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              发布
+            </Button>
           </div>
         </div>
 

@@ -78,12 +78,16 @@ func New(cfg Config) (*App, error) {
 
 	// Build engines for all seeded processes
 	ctx := context.Background()
-	for _, alias := range a.proAliases {
-		eng, err := nova.NewEngine(ctx, nova.EngineConfig{Store: st, ProAlias: alias})
+	allPros, err := st.ListPros(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list pros: %w", err)
+	}
+	for _, pro := range allPros {
+		eng, err := nova.NewEngine(ctx, nova.EngineConfig{Store: st, ProAlias: pro.Alias})
 		if err != nil {
-			return nil, fmt.Errorf("create engine for %s: %w", alias, err)
+			return nil, fmt.Errorf("create engine for %s: %w", pro.Alias, err)
 		}
-		a.engines[alias] = eng
+		a.engines[pro.Alias] = eng
 		a.engByProID[eng.Pro().ID] = eng
 	}
 
@@ -252,6 +256,10 @@ func (a *App) registerRoutes() {
 
 	// Protected API routes (require JWT)
 	a.mux.Handle("GET /api/v1/processes", a.authMiddleware(http.HandlerFunc(a.handleListProcesses)))
+	a.mux.Handle("GET /api/v1/processes/{alias}/design", a.authMiddleware(http.HandlerFunc(a.handleLoadDesign)))
+	a.mux.Handle("POST /api/v1/processes/{alias}/design", a.authMiddleware(http.HandlerFunc(a.handleSaveDesign)))
+	a.mux.Handle("POST /api/v1/processes/{alias}/publish", a.authMiddleware(http.HandlerFunc(a.handlePublish)))
+	a.mux.Handle("DELETE /api/v1/processes/{alias}", a.authMiddleware(http.HandlerFunc(a.handleDeleteProcess)))
 	a.mux.Handle("GET /api/v1/entities", a.authMiddleware(http.HandlerFunc(a.handleListEntities)))
 	a.mux.Handle("POST /api/v1/entities", a.authMiddleware(http.HandlerFunc(a.handleCreateEntity)))
 	a.mux.Handle("GET /api/v1/entities/{id}", a.authMiddleware(http.HandlerFunc(a.handleGetEntity)))
@@ -399,19 +407,377 @@ func fmtTaskState(s nova.TaskState) string {
 
 func (a *App) handleListProcesses(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	pros, err := a.st.ListPros(ctx)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	var procs []map[string]any
-	for _, alias := range a.proAliases {
-		pro, _ := a.st.GetProByAlias(ctx, alias)
-		if pro != nil {
-			procs = append(procs, map[string]any{
-				"id": pro.ID, "seq": pro.Seq, "alias": pro.Alias, "name": pro.Name, "ver": pro.Ver,
-			})
-		}
+	for _, pro := range pros {
+		procs = append(procs, map[string]any{
+			"id": pro.ID, "seq": pro.Seq, "alias": pro.Alias, "name": pro.Name, "ver": pro.Ver,
+		})
 	}
 	if procs == nil {
 		procs = []map[string]any{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"processes": procs})
+}
+
+// ─── Process Design Handlers ─────────────────────────────────────────────────
+
+// designAct is the JSON representation of an activity in design mode.
+type designAct struct {
+	Name     string `json:"name"`
+	Title    string `json:"title"`
+	Type     int    `json:"type"`
+	Policy   int    `json:"policy,omitempty"`
+	Editable bool   `json:"editable"`
+}
+
+// designLink is the JSON representation of a link in design mode.
+type designLink struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func (a *App) handleLoadDesign(w http.ResponseWriter, r *http.Request) {
+	alias := r.PathValue("alias")
+	if alias == "" {
+		errJSON(w, http.StatusBadRequest, "alias required")
+		return
+	}
+
+	ctx := r.Context()
+	pro, err := a.st.GetProByAlias(ctx, alias)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pro == nil {
+		errJSON(w, http.StatusNotFound, "process not found: "+alias)
+		return
+	}
+
+	// Get ProVer for current version
+	pv, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pv == nil {
+		errJSON(w, http.StatusNotFound, "process version not found")
+		return
+	}
+
+	// Get acts
+	acts, err := a.st.GetActsByProVer(ctx, pv.ID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Get links
+	links, err := a.st.GetLinksByProVer(ctx, pv.ID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Get man_rules for each act
+	manRules := make(map[string]*nova.ManRule)
+	for _, act := range acts {
+		rule, _ := a.st.GetManRule(ctx, act.ID)
+		if rule != nil {
+			manRules[act.Name] = rule
+		}
+	}
+
+	// Build response
+	var actItems []map[string]any
+	for _, act := range acts {
+		item := map[string]any{
+			"name":  act.Name,
+			"title": act.Title,
+			"type":  int(act.Type),
+		}
+		if rule, ok := manRules[act.Name]; ok {
+			item["policy"] = int(rule.Policy)
+		}
+		actItems = append(actItems, item)
+	}
+
+	var linkItems []map[string]any
+	for _, link := range links {
+		linkItems = append(linkItems, map[string]any{
+			"from": link.PrevActID,
+			"to":   link.ActID,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"process": map[string]any{
+			"id":    pro.ID,
+			"alias": pro.Alias,
+			"name":  pro.Name,
+			"ver":   pro.Ver,
+		},
+		"acts":  actItems,
+		"links": linkItems,
+		"man_rules": map[string]any{
+			// Flatten: activity_name -> policy
+		},
+	})
+}
+
+func (a *App) handleSaveDesign(w http.ResponseWriter, r *http.Request) {
+	alias := r.PathValue("alias")
+	if alias == "" {
+		errJSON(w, http.StatusBadRequest, "alias required")
+		return
+	}
+
+	var req struct {
+		Name  string       `json:"name"`
+		Acts  []designAct  `json:"acts"`
+		Links []designLink `json:"links"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Name == "" {
+		errJSON(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if len(req.Acts) == 0 {
+		errJSON(w, http.StatusBadRequest, "at least one act required")
+		return
+	}
+
+	ctx := r.Context()
+	pro, ver, err := a.saveDesign(ctx, alias, req.Name, req.Acts, req.Links)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"process": map[string]any{
+			"id": pro.ID, "alias": pro.Alias, "name": pro.Name, "ver": pro.Ver,
+		},
+		"ver": ver,
+	})
+}
+
+func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
+	alias := r.PathValue("alias")
+	if alias == "" {
+		errJSON(w, http.StatusBadRequest, "alias required")
+		return
+	}
+
+	ctx := r.Context()
+	pro, err := a.st.GetProByAlias(ctx, alias)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pro == nil {
+		errJSON(w, http.StatusNotFound, "process not found: "+alias)
+		return
+	}
+
+	// Get the current ProVer (draft) and mark it as released
+	pv, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pv == nil {
+		errJSON(w, http.StatusNotFound, "version not found")
+		return
+	}
+
+	// Update ProVer is_release to 1
+	// Since there's no UpdateProVer method, we UPDATE via raw SQL on the store
+	if err := a.st.Exec(`UPDATE pro_ver SET is_release = 1 WHERE id = ?`, pv.ID); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Rebuild engine for this process
+	eng, err := nova.NewEngine(ctx, nova.EngineConfig{Store: a.st, ProAlias: alias})
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.engines[alias] = eng
+	a.engByProID[eng.Pro().ID] = eng
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "published",
+		"ver":    pro.Ver,
+	})
+}
+
+func (a *App) handleDeleteProcess(w http.ResponseWriter, r *http.Request) {
+	alias := r.PathValue("alias")
+	if alias == "" {
+		errJSON(w, http.StatusBadRequest, "alias required")
+		return
+	}
+
+	ctx := r.Context()
+	pro, err := a.st.GetProByAlias(ctx, alias)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pro == nil {
+		errJSON(w, http.StatusNotFound, "process not found: "+alias)
+		return
+	}
+
+	// Remove engine
+	delete(a.engines, alias)
+	delete(a.engByProID, pro.ID)
+
+	if err := a.st.DeletePro(ctx, pro.ID); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// saveDesign persists a process design. If the process does not exist, it creates
+// a new one. If it exists, it creates a new draft version with incremented ver.
+func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designAct, links []designLink) (*nova.Pro, int, error) {
+	pro, _ := a.st.GetProByAlias(ctx, alias)
+	if pro == nil {
+		// New process: use ProcessBuilder to create
+		builder := nova.NewProcess(alias, name)
+		for _, act := range acts {
+			at := nova.ActType(act.Type)
+			builder.Act(act.Name, at)
+			if act.Title != "" {
+				builder.Title(act.Title)
+			}
+			if act.Policy > 0 {
+				builder.On(nova.ManPolicy(act.Policy))
+			}
+		}
+		for _, link := range links {
+			builder.Link(link.From, link.To)
+		}
+		p, err := builder.Store(ctx, a.st)
+		if err != nil {
+			return nil, 0, fmt.Errorf("create process: %w", err)
+		}
+		return p, 1, nil
+	}
+
+	// Existing process: create new draft version
+	nextVer := pro.Ver + 1
+
+	// Validate (reuse builder.Validate logic)
+	b := nova.NewProcess(alias, name)
+	for _, act := range acts {
+		at := nova.ActType(act.Type)
+		b.Act(act.Name, at)
+		if act.Title != "" {
+			b.Title(act.Title)
+		}
+		if act.Policy > 0 {
+			b.On(nova.ManPolicy(act.Policy))
+		}
+	}
+	for _, link := range links {
+		b.Link(link.From, link.To)
+	}
+	if err := b.Validate(); err != nil {
+		return nil, 0, fmt.Errorf("validate: %w", err)
+	}
+
+	// Get existing pro_ver to know the pro_ver ID for this version
+	oldPv, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get current ver: %w", err)
+	}
+
+	// Delete old acts and links
+	if oldPv != nil {
+		if err := a.st.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
+			return nil, 0, fmt.Errorf("delete old links: %w", err)
+		}
+		if err := a.st.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
+			return nil, 0, fmt.Errorf("delete old acts: %w", err)
+		}
+	}
+
+	// Create new ProVer (draft)
+	newPv := &nova.ProVer{ProID: pro.ID, Ver: nextVer, IsRelease: false}
+	if err := a.st.CreateProVer(ctx, newPv); err != nil {
+		return nil, 0, fmt.Errorf("create version: %w", err)
+	}
+
+	// Create activities
+	nameToID := make(map[string]string, len(acts))
+	for _, act := range acts {
+		aAct := &nova.Act{
+			ProID: pro.ID,
+			Name:  act.Name,
+			Title: act.Title,
+			Type:  nova.ActType(act.Type),
+			Ver:   nextVer,
+		}
+		if act.Type == int(nova.ActTypeMANUAL) {
+			aAct.Editable = true
+		}
+		if err := a.st.CreateAct(ctx, aAct); err != nil {
+			return nil, 0, fmt.Errorf("create act %q: %w", act.Name, err)
+		}
+		nameToID[act.Name] = aAct.ID
+	}
+
+	// Create links
+	for i, link := range links {
+		l := &nova.Link{
+			ProVerID:  newPv.ID,
+			ActID:     nameToID[link.To],
+			PrevActID: nameToID[link.From],
+			Title:     fmt.Sprintf("L%d", i+1),
+			Type:      nova.LinkTypeFORWARD,
+		}
+		if err := a.st.CreateLink(ctx, l); err != nil {
+			return nil, 0, fmt.Errorf("create link %s→%s: %w", link.From, link.To, err)
+		}
+	}
+
+	// Create man rules
+	for _, act := range acts {
+		if act.Policy > 0 {
+			r := &nova.ManRule{
+				ActID:      nameToID[act.Name],
+				BaseOn:     nova.HandlerBaseChannel,
+				Policy:     nova.ManPolicy(act.Policy),
+				SelAllowed: false,
+			}
+			if err := a.st.CreateManRule(ctx, r); err != nil {
+				return nil, 0, fmt.Errorf("create rule for %q: %w", act.Name, err)
+			}
+		}
+	}
+
+	// Update pro.Ver
+	pro.Name = name
+	pro.Ver = nextVer
+	if err := a.st.UpdatePro(ctx, pro); err != nil {
+		return nil, 0, fmt.Errorf("update pro: %w", err)
+	}
+
+	return pro, nextVer, nil
 }
 
 func (a *App) handleListEntities(w http.ResponseWriter, r *http.Request) {
