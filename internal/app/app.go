@@ -188,7 +188,7 @@ func (a *App) seed() error {
 			Act("single_c", nova.ActTypeMANUAL).Title("单签C").On(nova.ManPolicySINGLE).
 			Act("converge1", nova.ActTypeCONVERGE).
 			Act("wait_item", nova.ActTypeWAIT).Title("等待外部确认").WaitFor("single_c").
-			Act("fin_signing", nova.ActTypeMANUAL).Title("终审签字").On(nova.ManPolicySINGLE).
+			Act("fin_signing", nova.ActTypeMANUAL).Title("终审签字").ForceOpinion().On(nova.ManPolicySINGLE).
 			Act("end", nova.ActTypeEND).
 			Link("start", "draft").
 			Link("draft", "router1").
@@ -429,17 +429,19 @@ func (a *App) handleListProcesses(w http.ResponseWriter, r *http.Request) {
 
 // designAct is the JSON representation of an activity in design mode.
 type designAct struct {
-	Name     string `json:"name"`
-	Title    string `json:"title"`
-	Type     int    `json:"type"`
-	Policy   int    `json:"policy,omitempty"`
-	Editable bool   `json:"editable"`
+	Name         string `json:"name"`
+	Title        string `json:"title"`
+	Type         int    `json:"type"`
+	Policy       int    `json:"policy,omitempty"`
+	Editable     bool   `json:"editable"`
+	ForceOpinion bool   `json:"force_opinion,omitempty"`
 }
 
 // designLink is the JSON representation of a link in design mode.
 type designLink struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Decision string `json:"decision,omitempty"`
 }
 
 func (a *App) handleLoadDesign(w http.ResponseWriter, r *http.Request) {
@@ -503,9 +505,10 @@ func (a *App) handleLoadDesign(w http.ResponseWriter, r *http.Request) {
 	var actItems []map[string]any
 	for _, act := range acts {
 		item := map[string]any{
-			"name":  act.Name,
-			"title": act.Title,
-			"type":  int(act.Type),
+			"name":          act.Name,
+			"title":         act.Title,
+			"type":          int(act.Type),
+			"force_opinion": act.ForceOpinion,
 		}
 		if rule, ok := manRules[act.Name]; ok {
 			item["policy"] = int(rule.Policy)
@@ -524,8 +527,9 @@ func (a *App) handleLoadDesign(w http.ResponseWriter, r *http.Request) {
 			toName = link.ActID
 		}
 		linkItems = append(linkItems, map[string]any{
-			"from": fromName,
-			"to":   toName,
+			"from":     fromName,
+			"to":       toName,
+			"decision": link.DecisionFilter,
 		})
 	}
 
@@ -681,6 +685,9 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 			if act.Policy > 0 {
 				builder.On(nova.ManPolicy(act.Policy))
 			}
+			if act.ForceOpinion {
+				builder.ForceOpinion()
+			}
 		}
 		for _, link := range links {
 			builder.Link(link.From, link.To)
@@ -706,9 +713,15 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 		if act.Policy > 0 {
 			b.On(nova.ManPolicy(act.Policy))
 		}
+		if act.ForceOpinion {
+			b.ForceOpinion()
+		}
 	}
 	for _, link := range links {
 		b.Link(link.From, link.To)
+		if link.Decision != "" {
+			b.Decision(link.Decision)
+		}
 	}
 	if err := b.Validate(); err != nil {
 		return nil, 0, fmt.Errorf("validate: %w", err)
@@ -740,11 +753,12 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 	nameToID := make(map[string]string, len(acts))
 	for _, act := range acts {
 		aAct := &nova.Act{
-			ProID: pro.ID,
-			Name:  act.Name,
-			Title: act.Title,
-			Type:  nova.ActType(act.Type),
-			Ver:   nextVer,
+			ProID:        pro.ID,
+			Name:         act.Name,
+			Title:        act.Title,
+			Type:         nova.ActType(act.Type),
+			Ver:          nextVer,
+			ForceOpinion: act.ForceOpinion,
 		}
 		if act.Type == int(nova.ActTypeMANUAL) {
 			aAct.Editable = true
@@ -758,11 +772,12 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 	// Create links
 	for i, link := range links {
 		l := &nova.Link{
-			ProVerID:  newPv.ID,
-			ActID:     nameToID[link.To],
-			PrevActID: nameToID[link.From],
-			Title:     fmt.Sprintf("L%d", i+1),
-			Type:      nova.LinkTypeFORWARD,
+			ProVerID:       newPv.ID,
+			ActID:          nameToID[link.To],
+			PrevActID:      nameToID[link.From],
+			Title:          fmt.Sprintf("L%d", i+1),
+			Type:           nova.LinkTypeFORWARD,
+			DecisionFilter: link.Decision,
 		}
 		if err := a.st.CreateLink(ctx, l); err != nil {
 			return nil, 0, fmt.Errorf("create link %s→%s: %w", link.From, link.To, err)
@@ -1011,11 +1026,13 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 		handlerName = "未知用户"
 	}
 	var opinionContent string
-	// Accept optional handler override and opinion from body
+	var decision string
+	// Accept optional handler override, opinion, and decision from body
 	var req struct {
 		HandlerUID     string `json:"handler_uid,omitempty"`
 		HandlerName    string `json:"handler_name,omitempty"`
 		OpinionContent string `json:"opinion_content,omitempty"`
+		Decision       string `json:"decision,omitempty"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.HandlerUID != "" {
@@ -1025,6 +1042,7 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 	if req.OpinionContent != "" {
 		opinionContent = req.OpinionContent
 	}
+	decision = req.Decision
 
 	ctx := r.Context()
 	eng, err := a.engineForEntity(ctx, id)
@@ -1038,7 +1056,23 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	si, err := sess.Submit()
+	// ForceOpinion check: if current active act requires opinion, validate it
+	tasks, _ := a.st.GetTasksByEntity(ctx, id)
+	curTask := findActiveTaskInList(tasks)
+	if curTask != nil {
+		curAct, _ := a.st.GetAct(ctx, curTask.ActID)
+		if curAct != nil && curAct.ForceOpinion && opinionContent == "" {
+			errJSON(w, http.StatusBadRequest, "该环节需要填写处理意见（force_opinion）")
+			return
+		}
+	}
+
+	var si *nova.SubmitInfo
+	if decision != "" {
+		si, err = sess.SubmitWith(decision)
+	} else {
+		si, err = sess.Submit()
+	}
 	if err != nil {
 		errJSON(w, http.StatusBadRequest, err.Error())
 		return
@@ -1652,4 +1686,14 @@ func errJSON(w http.ResponseWriter, status int, msg string) {
 func fmtTime(t *time.Time) string {
 	if t == nil { return "" }
 	return t.Format("2006-01-02 15:04")
+}
+
+// findActiveTaskInList returns the first active (non-OVER) task from a task list.
+func findActiveTaskInList(tasks []*nova.Task) *nova.Task {
+	for _, t := range tasks {
+		if t.State != nova.TaskStateOVER {
+			return t
+		}
+	}
+	return nil
 }

@@ -232,7 +232,7 @@ func (s *Session) PreSubmit() (*SubmitInfo, error) {
 	if s.state != SessionStateHandle {
 		return nil, fmt.Errorf("cannot pre-submit in state %d", s.state)
 	}
-	return s.doSubmit(false)
+	return s.doSubmit("", false)
 }
 
 // Submit submits the entity to the next activity.
@@ -240,7 +240,16 @@ func (s *Session) Submit() (*SubmitInfo, error) {
 	if s.state != SessionStateHandle {
 		return nil, fmt.Errorf("cannot submit in state %d", s.state)
 	}
-	return s.doSubmit(true)
+	return s.doSubmit("", true)
+}
+
+// SubmitWith submits the entity with a decision label.
+// The decision is used by gotoNext to select among links with matching decision_filter.
+func (s *Session) SubmitWith(decision string) (*SubmitInfo, error) {
+	if s.state != SessionStateHandle {
+		return nil, fmt.Errorf("cannot submit in state %d", s.state)
+	}
+	return s.doSubmit(decision, true)
 }
 
 // ─── Internal: State Machine Transitions ──────────────────────────────────────
@@ -259,7 +268,7 @@ func (s *Session) doSave() error {
 	return nil
 }
 
-func (s *Session) doSubmit(isTrue bool) (*SubmitInfo, error) {
+func (s *Session) doSubmit(decision string, isTrue bool) (*SubmitInfo, error) {
 	// Fire BEF_SUBMIT hook
 	if s.eng.hookRouter != nil {
 		feedback := s.eng.hookRouter.DoHook(s.ctx, ThroughBefSubmit)
@@ -269,12 +278,13 @@ func (s *Session) doSubmit(isTrue bool) (*SubmitInfo, error) {
 	}
 
 	stater := &submitEngine{
-		session: s,
-		store:   s.store,
-		pro:     s.eng.pro,
-		acts:    s.eng.acts,
-		actsByID: s.eng.actsByID,
-		outLinks: s.eng.outLinks,
+		session:   s,
+		store:     s.store,
+		pro:       s.eng.pro,
+		acts:      s.eng.acts,
+		actsByID:  s.eng.actsByID,
+		outLinks:  s.eng.outLinks,
+		decision:  decision,
 		submitInfo: &SubmitInfo{},
 		hookRouter: s.eng.hookRouter,
 	}
@@ -306,6 +316,7 @@ type submitEngine struct {
 	acts       map[string]*Act
 	actsByID   map[string]*Act
 	outLinks   map[string][]*Link
+	decision   string // decision label from submitter, used for decision_filter matching
 	submitInfo *SubmitInfo
 	hookRouter *HookRouter
 }
@@ -373,6 +384,20 @@ func (se *submitEngine) gotoNext(ctx context.Context, entity *Entity, curTask *T
 		if fb == FeedbackAbandon {
 			return nil, fmt.Errorf("next-link selection abandoned by hook")
 		}
+	}
+
+	// If a decision was provided, filter links by matching decision_filter
+	if se.decision != "" {
+		var filtered []*Link
+		for _, l := range nextList {
+			if l.DecisionFilter == "" || l.DecisionFilter == se.decision {
+				filtered = append(filtered, l)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("no link matches decision %q", se.decision)
+		}
+		nextList = filtered
 	}
 
 	// If multiple choices, use the first (caller can override via hook)

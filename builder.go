@@ -6,7 +6,6 @@ import (
 )
 
 // processStore defines the storage operations needed by ProcessBuilder.
-// Store implementations should implement this interface.
 type processStore interface {
 	CreateProcess(ctx context.Context, p *Pro) error
 	CreateProVer(ctx context.Context, pv *ProVer) error
@@ -16,18 +15,6 @@ type processStore interface {
 }
 
 // ProcessBuilder provides a chainable API for defining workflow processes.
-//
-// Usage:
-//
-//	pro, err := NewProcess("LEAVE", "请假流程").
-//	    Act("开始", ActTypeSTART).
-//	    Act("起草", ActTypeMANUAL).On(ManPolicySINGLE).
-//	    Act("审批", ActTypeMANUAL).On(ManPolicySINGLE).
-//	    Act("结束", ActTypeEND).
-//	    Link("开始", "起草").
-//	    Link("起草", "审批").
-//	    Link("审批", "结束").
-//	    Store(ctx, store)
 type ProcessBuilder struct {
 	alias string
 	name  string
@@ -37,11 +24,12 @@ type ProcessBuilder struct {
 }
 
 type actDef struct {
-	name     string
-	title    string
-	typ      ActType
-	rule     *ManRuleDef
-	waitActs []string
+	name         string
+	title        string
+	typ          ActType
+	rule         *ManRuleDef
+	waitActs     []string
+	forceOpinion bool
 }
 
 // ManRuleDef configures handler assignment for a manual activity.
@@ -52,18 +40,17 @@ type ManRuleDef struct {
 }
 
 type linkDef struct {
-	from string
-	to   string
+	from           string
+	to             string
+	decisionFilter string
 }
 
 // NewProcess starts building a new process definition.
-// Alias must be unique; typically 4-10 uppercase characters.
 func NewProcess(alias, name string) *ProcessBuilder {
 	return &ProcessBuilder{alias: alias, name: name}
 }
 
 // Act adds an activity to the process definition.
-// Subsequent calls to On(), WaitFor(), Title() modify this activity.
 func (b *ProcessBuilder) Act(name string, typ ActType) *ProcessBuilder {
 	a := &actDef{
 		name:  name,
@@ -110,6 +97,14 @@ func (b *ProcessBuilder) SelAllowed() *ProcessBuilder {
 	return b
 }
 
+// ForceOpinion marks the current activity as requiring a mandatory opinion on submit.
+func (b *ProcessBuilder) ForceOpinion() *ProcessBuilder {
+	if b.cur != nil {
+		b.cur.forceOpinion = true
+	}
+	return b
+}
+
 // WaitFor configures which activities a WAIT activity should wait for.
 func (b *ProcessBuilder) WaitFor(actNames ...string) *ProcessBuilder {
 	if b.cur != nil {
@@ -119,9 +114,18 @@ func (b *ProcessBuilder) WaitFor(actNames ...string) *ProcessBuilder {
 }
 
 // Link adds a directed edge from one activity to another.
-// Both must have been defined via Act().
 func (b *ProcessBuilder) Link(from, to string) *ProcessBuilder {
 	b.links = append(b.links, &linkDef{from: from, to: to})
+	return b
+}
+
+// Decision sets a decision filter label on the most recently added link.
+// When set, this link is only taken when the submitter chooses a matching decision.
+func (b *ProcessBuilder) Decision(label string) *ProcessBuilder {
+	if len(b.links) == 0 {
+		return b
+	}
+	b.links[len(b.links)-1].decisionFilter = label
 	return b
 }
 
@@ -188,7 +192,6 @@ func (b *ProcessBuilder) Validate() error {
 }
 
 // Store persists the process definition.
-// The store must implement the processStore interface (SQLite does).
 func (b *ProcessBuilder) Store(ctx context.Context, s Store) (*Pro, error) {
 	if err := b.Validate(); err != nil {
 		return nil, fmt.Errorf("validate: %w", err)
@@ -214,12 +217,13 @@ func (b *ProcessBuilder) Store(ctx context.Context, s Store) (*Pro, error) {
 	nameToID := make(map[string]string, len(b.acts))
 	for _, a := range b.acts {
 		act := &Act{
-			ProID:    p.ID,
-			Name:     a.name,
-			Title:    a.title,
-			Type:     a.typ,
-			Ver:      1,
-			Editable: a.typ == ActTypeMANUAL,
+			ProID:        p.ID,
+			Name:         a.name,
+			Title:        a.title,
+			Type:         a.typ,
+			Ver:          1,
+			Editable:     a.typ == ActTypeMANUAL,
+			ForceOpinion: a.forceOpinion,
 		}
 		if len(a.waitActs) > 0 {
 			act.WaitActs = a.waitActs
@@ -233,11 +237,12 @@ func (b *ProcessBuilder) Store(ctx context.Context, s Store) (*Pro, error) {
 	// Create links
 	for i, l := range b.links {
 		link := &Link{
-			ProVerID:  pv.ID,
-			ActID:     nameToID[l.to],
-			PrevActID: nameToID[l.from],
-			Title:     fmt.Sprintf("L%d", i+1),
-			Type:      LinkTypeFORWARD,
+			ProVerID:       pv.ID,
+			ActID:          nameToID[l.to],
+			PrevActID:      nameToID[l.from],
+			Title:          fmt.Sprintf("L%d", i+1),
+			Type:           LinkTypeFORWARD,
+			DecisionFilter: l.decisionFilter,
 		}
 		if err := ps.CreateLink(ctx, link); err != nil {
 			return nil, fmt.Errorf("create link %s→%s: %w", l.from, l.to, err)

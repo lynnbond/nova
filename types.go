@@ -173,6 +173,10 @@ type Link struct {
 	PrevActID string
 	Title     string
 	Type      LinkType
+
+	// DecisionFilter restricts this link to submissions with a matching decision label.
+	// Empty string means this link is the default (used when no decision is specified).
+	DecisionFilter string
 }
 
 // ManRule defines handler configuration for a MANUAL activity.

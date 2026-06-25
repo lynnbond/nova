@@ -268,6 +268,12 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
+	// Check and add decision_filter column if missing (migration for existing DBs)
+	var colCount int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('act_link') WHERE name = 'decision_filter'`).Scan(&colCount)
+	if colCount == 0 {
+		s.db.Exec(`ALTER TABLE act_link ADD COLUMN decision_filter TEXT NOT NULL DEFAULT ''`)
+	}
 	return nil
 }
 
@@ -337,7 +343,7 @@ func (s *Store) GetActsByProVer(ctx context.Context, proVerID string) ([]*nova.A
 
 func (s *Store) GetLinksByProVer(ctx context.Context, proVerID string) ([]*nova.Link, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, pro_ver_id, act_id, prev_act_id, title, link_type
+		`SELECT id, pro_ver_id, act_id, prev_act_id, title, link_type, decision_filter
 		 FROM act_link WHERE pro_ver_id = ?`, proVerID)
 	if err != nil {
 		return nil, err
@@ -346,7 +352,7 @@ func (s *Store) GetLinksByProVer(ctx context.Context, proVerID string) ([]*nova.
 	var links []*nova.Link
 	for rows.Next() {
 		l := &nova.Link{}
-		if err := rows.Scan(&l.ID, &l.ProVerID, &l.ActID, &l.PrevActID, &l.Title, &l.Type); err != nil {
+		if err := rows.Scan(&l.ID, &l.ProVerID, &l.ActID, &l.PrevActID, &l.Title, &l.Type, &l.DecisionFilter); err != nil {
 			return nil, err
 		}
 		// Act will be populated by caller
@@ -849,9 +855,9 @@ func (s *Store) CreateLink(ctx context.Context, l *nova.Link) error {
 		return fmt.Errorf("generate id: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO act_link (id, pro_ver_id, act_id, prev_act_id, title, link_type)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		fmt.Sprintf("%d", nextID), l.ProVerID, l.ActID, l.PrevActID, l.Title, l.Type)
+		`INSERT INTO act_link (id, pro_ver_id, act_id, prev_act_id, title, link_type, decision_filter)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		fmt.Sprintf("%d", nextID), l.ProVerID, l.ActID, l.PrevActID, l.Title, l.Type, l.DecisionFilter)
 	if err != nil {
 		return err
 	}
@@ -1173,7 +1179,7 @@ func (s *Store) GetAct(ctx context.Context, id string) (*nova.Act, error) {
 // GetLinksByAct returns all forward links where prev_act_id = actID.
 func (s *Store) GetLinksByAct(ctx context.Context, actID string) ([]*nova.Link, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, pro_ver_id, act_id, prev_act_id,
-		title, link_type FROM act_link WHERE prev_act_id = ?`, actID)
+		title, link_type, decision_filter FROM act_link WHERE prev_act_id = ?`, actID)
 	if err != nil {
 		return nil, err
 	}
@@ -1182,7 +1188,7 @@ func (s *Store) GetLinksByAct(ctx context.Context, actID string) ([]*nova.Link, 
 	var links []*nova.Link
 	for rows.Next() {
 		var l nova.Link
-		if err := rows.Scan(&l.ID, &l.ProVerID, &l.ActID, &l.PrevActID, &l.Title, &l.Type); err != nil {
+		if err := rows.Scan(&l.ID, &l.ProVerID, &l.ActID, &l.PrevActID, &l.Title, &l.Type, &l.DecisionFilter); err != nil {
 			return nil, err
 		}
 		links = append(links, &l)
