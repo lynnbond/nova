@@ -265,9 +265,10 @@ func (a *App) registerRoutes() {
 	a.mux.Handle("GET /api/v1/entities/{id}", a.authMiddleware(http.HandlerFunc(a.handleGetEntity)))
 	a.mux.Handle("POST /api/v1/entities/{id}/submit", a.authMiddleware(http.HandlerFunc(a.handleSubmitEntity)))
 	a.mux.Handle("GET /api/v1/todos", a.authMiddleware(http.HandlerFunc(a.handleListTodos)))
-	a.mux.Handle("POST /api/v1/todos/{id}/accept", a.authMiddleware(http.HandlerFunc(a.handleAcceptTodo)))
-	a.mux.Handle("GET /api/v1/outbox", a.authMiddleware(http.HandlerFunc(a.handleListOutbox)))
-	a.mux.Handle("GET /api/v1/entities/{id}/opinions", a.authMiddleware(http.HandlerFunc(a.handleGetOpinions)))
+		a.mux.Handle("POST /api/v1/todos/{id}/accept", a.authMiddleware(http.HandlerFunc(a.handleAcceptTodo)))
+		a.mux.Handle("GET /api/v1/outbox", a.authMiddleware(http.HandlerFunc(a.handleListOutbox)))
+		a.mux.Handle("POST /api/v1/entities/{id}/return", a.authMiddleware(http.HandlerFunc(a.handleReturnEntity)))
+		a.mux.Handle("GET /api/v1/entities/{id}/opinions", a.authMiddleware(http.HandlerFunc(a.handleGetOpinions)))
 	a.mux.Handle("POST /api/v1/entities/{id}/opinions", a.authMiddleware(http.HandlerFunc(a.handleAddOpinion)))
 	a.mux.Handle("GET /api/v1/entities/{id}/logs", a.authMiddleware(http.HandlerFunc(a.handleEntityLogs)))
 	a.mux.Handle("GET /api/v1/users", a.authMiddleware(http.HandlerFunc(a.handleListUsers)))
@@ -1266,10 +1267,132 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
 
-// ─── Opinion Handlers ──────────────────────────────────────────────────────
+	// ─── Return Handler ─────────────────────────────────────────────────────
+
+	func (a *App) handleReturnEntity(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			errJSON(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+		var req struct {
+			TargetActName  string `json:"target_act_name"`
+			OpinionContent string `json:"opinion_content"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.TargetActName == "" {
+			errJSON(w, http.StatusBadRequest, "target_act_name required")
+			return
+		}
+		handlerUID, handlerName, _ := nova.CurHandler(r.Context())
+		if handlerUID == "" {
+			handlerUID = "unknown"
+			handlerName = "未知用户"
+		}
+		ctx := r.Context()
+
+		ent, err := a.st.GetEntity(ctx, id)
+		if err != nil || ent == nil {
+			errJSON(w, http.StatusNotFound, "entity not found")
+			return
+		}
+		if ent.State != nova.EntityStateSUBMIT && ent.State != nova.EntityStateBACK {
+			errJSON(w, http.StatusBadRequest, "entity not in process")
+			return
+		}
+
+		tasks, err := a.st.GetTasksByEntity(ctx, id)
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+				var curTask *nova.Task
+				for _, t := range tasks {
+					if t.State == nova.TaskStateTODO || t.State == nova.TaskStatePROCESSING {
+						curTask = t
+						break
+					}
+				}
+				if curTask == nil {
+			errJSON(w, http.StatusBadRequest, "no active task")
+			return
+		}
+
+		// Find target act in process definition
+		pro, err := a.st.GetPro(ctx, ent.ProID)
+		if err != nil || pro == nil {
+			errJSON(w, http.StatusNotFound, "process not found")
+			return
+		}
+		proVer, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
+		if err != nil || proVer == nil {
+			errJSON(w, http.StatusNotFound, "process ver not found")
+			return
+		}
+		acts, err := a.st.GetActsByProVer(ctx, proVer.ID)
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		var targetAct *nova.Act
+		for _, a2 := range acts {
+			if a2.Name == req.TargetActName {
+				targetAct = a2
+				break
+			}
+		}
+		if targetAct == nil {
+			errJSON(w, http.StatusBadRequest, "target act not found")
+			return
+		}
+
+		now := time.Now().UTC()
+		curTask.State = nova.TaskStateOVER
+		curTask.EndAt = &now
+		a.st.UpdateTaskState(ctx, curTask.ID, nova.TaskStateOVER)
+
+		step := &nova.Step{EntityID: id, ActID: targetAct.ID, ActName: targetAct.Name}
+		a.st.CreateStep(ctx, step)
+
+		newTask := &nova.Task{
+			EntityID: id, StepID: step.ID, ActID: targetAct.ID,
+			ActName: targetAct.Name, ActTitle: targetAct.Title,
+			State: nova.TaskStateTODO, Handlers: handlerName, StartAt: &now,
+		}
+		a.st.CreateTask(ctx, newTask)
+
+		a.st.CreateTodo(ctx, &nova.Todo{
+			TaskID: newTask.ID, EntityID: id, ActID: targetAct.ID, ProID: pro.ID,
+			HandlerUID: handlerUID, HandlerName: handlerName,
+			ActTitle: targetAct.Title, EntityTitle: ent.Title, ProName: pro.Name, ArriveAt: &now,
+		})
+
+		a.st.UpdateEntityState(ctx, id, nova.EntityStateBACK)
+		a.st.CreateHandleLog(ctx, &nova.HandleLog{
+			EntityID: id, TaskID: curTask.ID, ActTitle: curTask.ActTitle,
+			HandlerUID: handlerUID, HandlerName: handlerName,
+			Content: "退回至【" + targetAct.Title + "】", ArriveAt: &now, FinishAt: &now,
+		})
+		a.st.CreateHandleLog(ctx, &nova.HandleLog{
+			EntityID: id, TaskID: newTask.ID, ActTitle: targetAct.Title,
+			HandlerUID: handlerUID, HandlerName: handlerName,
+			Content: "被退回至此", ArriveAt: &now,
+		})
+
+		if req.OpinionContent != "" {
+			a.st.CreateOpinion(ctx, &nova.Opinion{
+				EntityID: id, HandlerUID: handlerUID, HandlerName: handlerName,
+				Content: "退回: " + req.OpinionContent, ActTitle: curTask.ActTitle, WrittenAt: now,
+			})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"status": "returned", "target_act": req.TargetActName, "new_task_id": newTask.ID, "entity_state": "已退回"})
+	}
+
+	// ─── Opinion Handlers ──────────────────────────────────────────────────────
 
 func (a *App) handleGetOpinions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
