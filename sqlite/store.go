@@ -450,7 +450,12 @@ func (s *Store) scanEntity(row interface{ Scan(dest ...any) error }) (*nova.Enti
 
 func (s *Store) UpdateEntityState(ctx context.Context, id string, state nova.EntityState) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(ctx, `UPDATE entity SET state = ?, updated_at = ? WHERE id = ?`, state, now, id)
+	var err error
+	if state == nova.EntityStateOVER {
+		_, err = s.db.ExecContext(ctx, `UPDATE entity SET state = ?, over_at = ?, updated_at = ? WHERE id = ?`, state, now, now, id)
+	} else {
+		_, err = s.db.ExecContext(ctx, `UPDATE entity SET state = ?, updated_at = ? WHERE id = ?`, state, now, id)
+	}
 	return err
 }
 

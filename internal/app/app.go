@@ -1126,7 +1126,11 @@ func (a *App) handleAcceptTodo(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleListOutbox(w http.ResponseWriter, r *http.Request) {
 	handlerUID := r.URL.Query().Get("handler")
-	if handlerUID == "" { handlerUID = "user_001" }
+	if handlerUID == "" {
+		uid, _, _ := nova.CurHandler(r.Context())
+		handlerUID = uid
+	}
+	if handlerUID == "" { handlerUID = "unknown" }
 
 	entities, err := a.st.GetUserDoneEntities(r.Context(), handlerUID)
 	if err != nil || entities == nil {
@@ -1287,10 +1291,10 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			errJSON(w, http.StatusBadRequest, "target_act_name required")
 			return
 		}
-		handlerUID, handlerName, _ := nova.CurHandler(r.Context())
-		if handlerUID == "" {
-			handlerUID = "unknown"
-			handlerName = "未知用户"
+		curUID, curName, _ := nova.CurHandler(r.Context())
+		if curUID == "" {
+			curUID = "unknown"
+			curName = "未知用户"
 		}
 		ctx := r.Context()
 
@@ -1309,14 +1313,14 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			errJSON(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-				var curTask *nova.Task
-				for _, t := range tasks {
-					if t.State == nova.TaskStateTODO || t.State == nova.TaskStatePROCESSING {
-						curTask = t
-						break
-					}
-				}
-				if curTask == nil {
+		var curTask *nova.Task
+		for _, t := range tasks {
+			if t.State == nova.TaskStateTODO || t.State == nova.TaskStatePROCESSING {
+				curTask = t
+				break
+			}
+		}
+		if curTask == nil {
 			errJSON(w, http.StatusBadRequest, "no active task")
 			return
 		}
@@ -1349,6 +1353,22 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Find original handler of the target act from handle logs
+		targetUID, targetName := curUID, curName // fallback to current user
+		logs, _ := a.st.GetEntityHandleLogs(ctx, id)
+		for i := len(logs) - 1; i >= 0; i-- {
+			if logs[i].ActTitle == targetAct.Title && logs[i].HandlerUID != "" {
+				targetUID = logs[i].HandlerUID
+				targetName = logs[i].HandlerName
+				break
+			}
+		}
+		// If target is draft act, use the draft creator
+		if targetUID == curUID && ent.DraftUID != "" && targetAct.Name == "draft" {
+			targetUID = ent.DraftUID
+			targetName = ent.DraftName
+		}
+
 		now := time.Now().UTC()
 		curTask.State = nova.TaskStateOVER
 		curTask.EndAt = &now
@@ -1360,31 +1380,31 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		newTask := &nova.Task{
 			EntityID: id, StepID: step.ID, ActID: targetAct.ID,
 			ActName: targetAct.Name, ActTitle: targetAct.Title,
-			State: nova.TaskStateTODO, Handlers: handlerName, StartAt: &now,
+			State: nova.TaskStateTODO, Handlers: targetName, StartAt: &now,
 		}
 		a.st.CreateTask(ctx, newTask)
 
 		a.st.CreateTodo(ctx, &nova.Todo{
 			TaskID: newTask.ID, EntityID: id, ActID: targetAct.ID, ProID: pro.ID,
-			HandlerUID: handlerUID, HandlerName: handlerName,
+			HandlerUID: targetUID, HandlerName: targetName,
 			ActTitle: targetAct.Title, EntityTitle: ent.Title, ProName: pro.Name, ArriveAt: &now,
 		})
 
 		a.st.UpdateEntityState(ctx, id, nova.EntityStateBACK)
 		a.st.CreateHandleLog(ctx, &nova.HandleLog{
 			EntityID: id, TaskID: curTask.ID, ActTitle: curTask.ActTitle,
-			HandlerUID: handlerUID, HandlerName: handlerName,
+			HandlerUID: curUID, HandlerName: curName,
 			Content: "退回至【" + targetAct.Title + "】", ArriveAt: &now, FinishAt: &now,
 		})
 		a.st.CreateHandleLog(ctx, &nova.HandleLog{
 			EntityID: id, TaskID: newTask.ID, ActTitle: targetAct.Title,
-			HandlerUID: handlerUID, HandlerName: handlerName,
+			HandlerUID: targetUID, HandlerName: targetName,
 			Content: "被退回至此", ArriveAt: &now,
 		})
 
 		if req.OpinionContent != "" {
 			a.st.CreateOpinion(ctx, &nova.Opinion{
-				EntityID: id, HandlerUID: handlerUID, HandlerName: handlerName,
+				EntityID: id, HandlerUID: curUID, HandlerName: curName,
 				Content: "退回: " + req.OpinionContent, ActTitle: curTask.ActTitle, WrittenAt: now,
 			})
 		}
