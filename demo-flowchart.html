@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1280, height=900" />
+<title>Nova DEMO 工作流流程图</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: #f8fafc;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 40px;
+}
+.container {
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  padding: 48px 60px;
+  max-width: 1200px;
+  width: 100%;
+}
+h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 4px;
+}
+.subtitle {
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 40px;
+}
+.flowchart {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  position: relative;
+}
+.branch-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 40px;
+  position: relative;
+  margin: 8px 0;
+}
+.node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+.node-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  /* border-width set per type */;
+  /* border-color set per type */;
+  padding: 10px 16px;
+  min-width: 72px;
+  text-align: center;
+  position: relative;
+}
+.node-terminal {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2.5px solid;
+}
+.node-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+.node-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-top: 2px;
+}
+.node-sub {
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 1px;
+}
+.node-badge {
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-top: 2px;
+}
+.arrow-down, .arrow-right {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.arrow-down { width: 100%; height: 28px; }
+.arrow-right { width: 36px; height: 20px; }
+.arrow-down svg, .arrow-right svg { width: 20px; height: 20px; }
+.connector-label {
+  font-size: 9px;
+  color: #94a3b8;
+  white-space: nowrap;
+  position: absolute;
+}
+.branch-lines {
+  position: relative;
+  width: 100%;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.branch-lines svg { width: 100%; height: 20px; }
+/* Colors */
+.start .node-box, .start .node-terminal { border-color: #34d399; background: #ecfdf5; }
+.start .node-icon, .start .node-badge { color: #059669; }
+.manual .node-box { border: 2px solid #93c5fd; background: #eff6ff; }
+.manual .node-icon { color: #3b82f6; }
+.manual .node-badge { background: #dbeafe; color: #2563eb; }
+.router .node-box { border: 2px solid #c4b5fd; background: #f5f3ff; }
+.router .node-icon { color: #8b5cf6; }
+.router .node-badge { background: #ede9fe; color: #7c3aed; }
+.converge .node-box { border: 2px solid #fdba74; background: #fff7ed; }
+.converge .node-icon { color: #f97316; }
+.converge .node-badge { background: #ffedd5; color: #ea580c; }
+.wait .node-box { border: 2px solid #fcd34d; background: #fffbeb; }
+.wait .node-icon { color: #f59e0b; }
+.wait .node-badge { background: #fef3c7; color: #d97706; }
+.end .node-box, .end .node-terminal { border-color: #fda4af; background: #fff1f2; }
+.end .node-icon, .end .node-badge { color: #e11d48; }
+/* Concurrent hint */
+.concurrent-hint {
+  font-size: 9px;
+  color: #8b5cf6;
+  background: #f5f3ff;
+  border: 1px dashed #c4b5fd;
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin-top: 2px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⛓ 综合审批Demo · 完整流程图</h1>
+  <p class="subtitle">Nova 工作流引擎 · 流程标识: DEMO &nbsp;·&nbsp; 覆盖: 并发 · 汇聚 · 等待</p>
+
+  <div class="flowchart">
+    <!-- START -->
+    <div class="row">
+      <div class="node start">
+        <div class="node-terminal">
+          <span class="node-icon">▶</span>
+        </div>
+        <span class="node-badge start" style="background:#d1fae5;border:none;padding:1px 8px">开始</span>
+      </div>
+    </div>
+    <div class="arrow-down">
+      <svg viewBox="0 0 20 20"><path d="M10 0v14" stroke="#94a3b8" stroke-width="2" fill="none"/><path d="M4 10l6 6 6-6" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
+    <!-- Draft -->
+    <div class="row">
+      <div class="node manual">
+        <div class="node-box">
+          <span class="node-icon">📝</span>
+          <span class="node-label">起草申请</span>
+          <span class="node-sub">张三</span>
+          <span class="node-badge">人工 · 单人</span>
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">
+      <svg viewBox="0 0 20 20"><path d="M10 0v14" stroke="#94a3b8" stroke-width="2" fill="none"/><path d="M4 10l6 6 6-6" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
+    <!-- ROUTER -->
+    <div class="row">
+      <div class="node router">
+        <div class="node-box" style="min-width:80px">
+          <span class="node-icon">⎊</span>
+          <span class="node-label">并行分发</span>
+          <span class="node-badge">并发路由</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Branch fork lines -->
+    <div class="branch-lines">
+      <svg viewBox="0 0 480 20">
+        <line x1="240" y1="0" x2="240" y2="10" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="50" y1="10" x2="430" y2="10" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="50" y1="10" x2="50" y2="20" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="240" y1="10" x2="240" y2="20" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="430" y1="10" x2="430" y2="20" stroke="#94a3b8" stroke-width="1.5"/>
+        <polygon points="43,20 50,14 57,20" fill="#94a3b8"/>
+        <polygon points="233,20 240,14 247,20" fill="#94a3b8"/>
+        <polygon points="423,20 430,14 437,20" fill="#94a3b8"/>
+      </svg>
+    </div>
+
+    <!-- 3 Branch nodes -->
+    <div class="branch-row">
+      <!-- 会签A -->
+      <div class="node manual">
+        <div class="node-box" style="min-width:80px">
+          <span class="node-icon">✓</span>
+          <span class="node-label">会签A</span>
+          <span class="node-sub">张三 + 李四</span>
+          <span class="node-badge">人工 · 并行</span>
+          <span class="concurrent-hint">👥 2人会签</span>
+        </div>
+      </div>
+
+      <!-- 会签B -->
+      <div class="node manual">
+        <div class="node-box" style="min-width:80px">
+          <span class="node-icon">✓</span>
+          <span class="node-label">会签B</span>
+          <span class="node-sub">张三 + 李四</span>
+          <span class="node-badge">人工 · 并行</span>
+          <span class="concurrent-hint">👥 2人会签</span>
+        </div>
+      </div>
+
+      <!-- 单签C -->
+      <div class="node manual">
+        <div class="node-box" style="min-width:80px">
+          <span class="node-icon">✏️</span>
+          <span class="node-label">单签C</span>
+          <span class="node-sub">王五</span>
+          <span class="node-badge">人工 · 单人</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Branch merge lines -->
+    <div class="branch-lines">
+      <svg viewBox="0 0 480 24">
+        <line x1="50" y1="0" x2="50" y2="10" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="240" y1="0" x2="240" y2="10" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="430" y1="0" x2="430" y2="10" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="50" y1="10" x2="430" y2="10" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="240" y1="10" x2="240" y2="24" stroke="#94a3b8" stroke-width="1.5"/>
+        <polygon points="233,24 240,18 247,24" fill="#94a3b8"/>
+      </svg>
+    </div>
+
+    <!-- CONVERGE -->
+    <div class="row">
+      <div class="node converge">
+        <div class="node-box" style="min-width:90px">
+          <span class="node-icon">⨁</span>
+          <span class="node-label">汇聚</span>
+          <span class="node-sub">等待全部分支到达</span>
+          <span class="node-badge">汇聚节点</span>
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">
+      <svg viewBox="0 0 20 20"><path d="M10 0v14" stroke="#94a3b8" stroke-width="2" fill="none"/><path d="M4 10l6 6 6-6" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
+    <!-- WAIT -->
+    <div class="row">
+      <div class="node wait">
+        <div class="node-box" style="min-width:100px">
+          <span class="node-icon">⏳</span>
+          <span class="node-label">等待外部确认</span>
+          <span class="node-sub">WaitFor: 单签C</span>
+          <span class="node-badge">等待节点</span>
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">
+      <svg viewBox="0 0 20 20"><path d="M10 0v14" stroke="#94a3b8" stroke-width="2" fill="none"/><path d="M4 10l6 6 6-6" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
+    <!-- Final approval -->
+    <div class="row">
+      <div class="node manual">
+        <div class="node-box" style="min-width:90px">
+          <span class="node-icon">📋</span>
+          <span class="node-label">终审签字</span>
+          <span class="node-sub">admin</span>
+          <span class="node-badge">人工 · 单人</span>
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">
+      <svg viewBox="0 0 20 20"><path d="M10 0v14" stroke="#94a3b8" stroke-width="2" fill="none"/><path d="M4 10l6 6 6-6" stroke="#94a3b8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
+    <!-- END -->
+    <div class="row">
+      <div class="node end">
+        <div class="node-terminal">
+          <span class="node-icon">■</span>
+        </div>
+        <span class="node-badge end" style="background:#ffe4e6;border:none;padding:1px 8px">结束</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div style="margin-top:40px; padding-top:24px; border-top:1px solid #e2e8f0; display:flex; gap:32px; justify-content:center; flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">
+      <span style="width:12px;height:12px;border-radius:50%;border:2px solid #34d399;background:#ecfdf5;display:inline-block"></span> START
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">
+      <span style="width:12px;height:12px;border-radius:3px;border:2px solid #93c5fd;background:#eff6ff;display:inline-block"></span> MANUAL 人工
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">
+      <span style="width:12px;height:12px;border-radius:3px;border:2px solid #c4b5fd;background:#f5f3ff;display:inline-block"></span> ROUTER 并发
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">
+      <span style="width:12px;height:12px;border-radius:3px;border:2px solid #fdba74;background:#fff7ed;display:inline-block"></span> CONVERGE 汇聚
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">
+      <span style="width:12px;height:12px;border-radius:3px;border:2px solid #fcd34d;background:#fffbeb;display:inline-block"></span> WAIT 等待
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b">
+      <span style="width:12px;height:12px;border-radius:50%;border:2px solid #fda4af;background:#fff1f2;display:inline-block"></span> END
+    </div>
+  </div>
+</div>
+</body>
+</html>
