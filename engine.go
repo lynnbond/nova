@@ -353,6 +353,26 @@ func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
 	entity := se.session.entity
 	ctx := se.session.ctx
 
+	// Idempotent submit guard: reload entity inside transaction to check state
+	liveEnt, err := se.store.GetEntity(ctx, entity.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get entity for idempotency check: %w", err)
+	}
+	if liveEnt == nil {
+		return nil, fmt.Errorf("entity not found")
+	}
+	if isTrue {
+		switch liveEnt.State {
+		case EntityStateDRAFT, EntityStateSUBMIT, EntityStateBACK:
+			// valid — proceed
+		default:
+			return nil, fmt.Errorf("cannot submit entity in state %d (already in terminal state)", liveEnt.State)
+		}
+		entity.State = liveEnt.State // sync cached entity with live state
+	} else {
+		// PreSubmit is read-only; just verify entity exists
+	}
+
 	// Get current tasks for this entity
 	tasks, err := se.store.GetTasksByEntity(ctx, entity.ID)
 	if err != nil {
@@ -603,9 +623,11 @@ func (se *submitEngine) gotoRouterAct(ctx context.Context, entity *Entity, curTa
 			return nil, fmt.Errorf("create router step: %w", err)
 		}
 
-		createStepLog(se.store, entity.ID, step.ID,
+		if err := createStepLog(se.store, ctx, entity.ID, step.ID,
 			curTask.ActID, nextLink.Act.ID, nextLink.Act.Name,
-			nextLink.Act.Title, nextLink.Act.Type, nextLink.Type)
+			nextLink.Act.Title, nextLink.Act.Type, nextLink.Type); err != nil {
+			return nil, fmt.Errorf("create router step log: %w", err)
+		}
 
 		// Recurse for each branch
 		if _, err := se.doSwitch(ctx, entity, curTask, nextLink); err != nil {
@@ -825,8 +847,8 @@ func defaultHandlerSet(rule *ManRule, actName string) []HandlerRef {
 	}
 }
 
-func createStepLog(store Store, entityID string, stepID int64, curActID, destActID string, destName, destTitle string, destType ActType, linkType LinkType) {
-	_ = store.CreateStepLog(context.Background(), &StepLog{
+func createStepLog(store Store, ctx context.Context, entityID string, stepID int64, curActID, destActID string, destName, destTitle string, destType ActType, linkType LinkType) error {
+	return store.CreateStepLog(ctx, &StepLog{
 		EntityID: entityID, StepID: stepID,
 		CurActID: curActID, DestActID: destActID,
 		DestActName: destName, DestActTitle: destTitle,

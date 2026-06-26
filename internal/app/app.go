@@ -26,13 +26,15 @@ import (
 //go:embed webdist/*
 var webFS embed.FS
 
-// Default JWT secret (dev only — override via Config.JWTSecret).
+// Default JWT secret (dev only — override via NOVA_JWT_SECRET env var or Config.JWTSecret).
 const defaultJWTSecret = "nova-dev-secret-do-not-use-in-production"
 
 // Config configures the Nova application.
 type Config struct {
 	DBPath    string
 	JWTSecret string
+	AdminUser string // default admin username (default: "admin")
+	AdminPass string // default admin password (default: "123456")
 }
 
 // App is the self-contained Nova workflow application.
@@ -164,7 +166,13 @@ func (a *App) engineForEntity(ctx context.Context, entityID string) (*nova.Engin
 }
 
 func (a *App) Serve(addr string) error {
-	a.srv = &http.Server{Addr: addr, Handler: a.mux}
+	a.srv = &http.Server{
+		Addr:         addr,
+		Handler:      a.mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 	log.Printf("Nova server listening on %s", addr)
 	return a.srv.ListenAndServe()
 }
@@ -264,11 +272,15 @@ func (a *App) seed() error {
 		}
 	}
 
-	// Set default password "123456" for users that don't have one yet
+	// Set default password for users that don't have one yet
+	defaultPass := a.cfg.AdminPass
+	if defaultPass == "" {
+		defaultPass = "123456"
+	}
 	allUsers, _ := a.st.ListUsers(context.Background())
 	for _, u := range allUsers {
 		if u.PasswordHash == "" {
-			hash, err := bcrypt.GenerateFromPassword([]byte("123456"), bcrypt.DefaultCost)
+			hash, err := bcrypt.GenerateFromPassword([]byte(defaultPass), bcrypt.DefaultCost)
 			if err != nil {
 				log.Printf("⚠️  hash password for %s: %v", u.UID, err)
 				continue
@@ -1140,10 +1152,31 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 	var opinionContent string
 	var decision string
 	var req struct {
+		TodoID         string `json:"todo_id"`
 		OpinionContent string `json:"opinion_content,omitempty"`
 		Decision       string `json:"decision,omitempty"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
+
+	// Task token authorization: require valid todo_id
+	if req.TodoID == "" {
+		errJSON(w, http.StatusBadRequest, "todo_id required for authorization")
+		return
+	}
+	todo, err := a.st.GetTodo(r.Context(), req.TodoID)
+	if err != nil || todo == nil {
+		errJSON(w, http.StatusNotFound, "todo not found")
+		return
+	}
+	if todo.EntityID != id {
+		errJSON(w, http.StatusForbidden, "todo does not belong to this entity")
+		return
+	}
+	if todo.HandlerUID != handlerUID {
+		errJSON(w, http.StatusForbidden, "当前用户没有该待办的权限")
+		return
+	}
+
 	if req.OpinionContent != "" {
 		opinionContent = req.OpinionContent
 	}
@@ -1185,14 +1218,14 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 
-	// Save opinion if provided
+	// Save opinion if provided (non-critical — log errors only)
 	if opinionContent != "" {
 		// Find current act title from the done task
 		opinionActTitle := ""
 		if si.DoneTask != nil {
 			opinionActTitle = si.DoneTask.ActTitle
 		}
-		_ = a.st.CreateOpinion(ctx, &nova.Opinion{
+		if err := a.st.CreateOpinion(ctx, &nova.Opinion{
 			EntityID:    id,
 			ActID:       "",
 			TaskID:      "",
@@ -1200,19 +1233,25 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 			HandlerName: handlerName,
 			Content:     opinionContent,
 			ActTitle:    opinionActTitle,
-		})
+		}); err != nil {
+			log.Printf("⚠️  create opinion for %s: %v", id, err)
+		}
 	}
 
-	// Update handle log finish with opinion
+	// Update handle log finish with opinion (non-critical)
 	if si.DoneTask != nil {
-		_ = a.st.UpdateHandleLogFinish(ctx, si.DoneTask.ID, now.Unix())
-		_ = a.st.UpdateHandleLogContent(ctx, si.DoneTask.ID, opinionContent)
+		if err := a.st.UpdateHandleLogFinish(ctx, si.DoneTask.ID, now.Unix()); err != nil {
+			log.Printf("⚠️  update handle log finish for %s: %v", id, err)
+		}
+		if err := a.st.UpdateHandleLogContent(ctx, si.DoneTask.ID, opinionContent); err != nil {
+			log.Printf("⚠️  update handle log content for %s: %v", id, err)
+		}
 	}
 
-	// Create handle log for the new task
+	// Create handle log for the new task (non-critical)
 	if len(si.NewTodos) > 0 {
 		for _, td := range si.NewTodos {
-			_ = a.st.CreateHandleLog(ctx, &nova.HandleLog{
+			if err := a.st.CreateHandleLog(ctx, &nova.HandleLog{
 				EntityID:    id,
 				TaskID:      td.TaskID,
 				ActTitle:    td.ActTitle,
@@ -1220,7 +1259,9 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 				HandlerName: td.HandlerName,
 				Content:     opinionContent,
 				ArriveAt:    &now,
-			})
+			}); err != nil {
+				log.Printf("⚠️  create handle log for %s: %v", id, err)
+			}
 		}
 	}
 
@@ -1470,6 +1511,7 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
+			TodoID         string `json:"todo_id"`
 			TargetActName  string `json:"target_act_name"`
 			OpinionContent string `json:"opinion_content"`
 		}
@@ -1482,6 +1524,24 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		if curUID == "" {
 			curUID = "unknown"
 			curName = "未知用户"
+		}
+		// Task token authorization
+		if req.TodoID == "" {
+			errJSON(w, http.StatusBadRequest, "todo_id required for authorization")
+			return
+		}
+		todo, err := a.st.GetTodo(r.Context(), req.TodoID)
+		if err != nil || todo == nil {
+			errJSON(w, http.StatusNotFound, "todo not found")
+			return
+		}
+		if todo.EntityID != id {
+			errJSON(w, http.StatusForbidden, "todo does not belong to this entity")
+			return
+		}
+		if todo.HandlerUID != curUID {
+			errJSON(w, http.StatusForbidden, "当前用户没有该待办的权限")
+			return
 		}
 		// Verify the handler has an active todo for this entity
 		if !checkHandlerAccess(w, a.st, r.Context(), id, curUID) {

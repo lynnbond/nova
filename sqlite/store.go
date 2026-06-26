@@ -591,7 +591,7 @@ func (s *Store) GetTasksByEntity(ctx context.Context, entityID string) ([]*nova.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, entity_id, step_id, act_id, act_name, act_title, task_state, handlers,
 		        converge, waiting, start_at, end_at, created_at, updated_at
-		 FROM run_task WHERE entity_id = ?`, entityID)
+		 FROM run_task WHERE entity_id = ? ORDER BY created_at ASC`, entityID)
 	if err != nil {
 		return nil, err
 	}
@@ -1387,7 +1387,7 @@ func (s *Store) SearchEntities(ctx context.Context, q, proAlias string, stateFil
 		args = append(args, *stateFilter)
 	}
 	if proAlias != "" {
-		whereClauses = append(whereClauses, "e.pro_id IN (SELECT id FROM pro WHERE alias = ?)")
+		whereClauses = append(whereClauses, "e.pro_id IN (SELECT id FROM process WHERE alias = ?)")
 		args = append(args, proAlias)
 	}
 	if q != "" {

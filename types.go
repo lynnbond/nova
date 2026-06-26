@@ -232,7 +232,9 @@ func (pv *ProVer) SnapshotActs() []*Act {
 		return nil
 	}
 	var snap ProVerSnapshot
-	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	if err := json.Unmarshal([]byte(pv.Snapshot), &snap); err != nil {
+		return nil
+	}
 	return snap.Acts
 }
 
@@ -242,7 +244,9 @@ func (pv *ProVer) SnapshotLinks() []*Link {
 		return nil
 	}
 	var snap ProVerSnapshot
-	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	if err := json.Unmarshal([]byte(pv.Snapshot), &snap); err != nil {
+		return nil
+	}
 	return snap.Links
 }
 
@@ -252,7 +256,9 @@ func (pv *ProVer) SnapshotManRules() []*ManRule {
 		return nil
 	}
 	var snap ProVerSnapshot
-	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	if err := json.Unmarshal([]byte(pv.Snapshot), &snap); err != nil {
+		return nil
+	}
 	return snap.ManRules
 }
 
@@ -262,7 +268,9 @@ func (pv *ProVer) SnapshotFirstAct() *Act {
 		return nil
 	}
 	var snap ProVerSnapshot
-	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	if err := json.Unmarshal([]byte(pv.Snapshot), &snap); err != nil {
+		return nil
+	}
 	return snap.FirstAct
 }
 

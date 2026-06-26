@@ -3,6 +3,9 @@ package nova
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -128,7 +131,10 @@ func (w *WebhookNotifier) Deliver(ctx context.Context, n *Notification, rawData 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Nova-Event", n.NotifType)
 		if cfg.Secret != "" {
-			req.Header.Set("X-Nova-Signature", cfg.Secret) // simplified; use HMAC in prod
+			mac := hmac.New(sha256.New, []byte(cfg.Secret))
+			mac.Write(body)
+			sig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+			req.Header.Set("X-Nova-Signature", sig)
 		}
 		resp, err := w.client.Do(req)
 		if err != nil {
