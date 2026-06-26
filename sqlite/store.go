@@ -393,15 +393,15 @@ func (s *Store) GetProVer(ctx context.Context, proID string, ver int) (*nova.Pro
 }
 
 func (s *Store) GetActsByProVer(ctx context.Context, proVerID string) ([]*nova.Act, error) {
-	// Get pro_id from pro_ver first, then query acts
 	var proID string
-	err := s.db.QueryRowContext(ctx, `SELECT pro_id FROM pro_ver WHERE id = ?`, proVerID).Scan(&proID)
+	var ver int
+	err := s.db.QueryRowContext(ctx, `SELECT pro_id, ver FROM pro_ver WHERE id = ?`, proVerID).Scan(&proID, &ver)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, pro_id, name, title, act_type, editable, force_opinion, wait_acts
-		 FROM act WHERE pro_id = ?`, proID)
+		 FROM act WHERE pro_id = ? AND act_ver = ?`, proID, ver)
 	if err != nil {
 		return nil, err
 	}
@@ -1020,19 +1020,20 @@ func (s *Store) DeleteActsByProVer(ctx context.Context, proVerID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Get pro_id from pro_ver
+	// Get pro_id and ver from pro_ver
 	var proID string
-	err := s.db.QueryRowContext(ctx, `SELECT pro_id FROM pro_ver WHERE id = ?`, proVerID).Scan(&proID)
+	var ver int
+	err := s.db.QueryRowContext(ctx, `SELECT pro_id, ver FROM pro_ver WHERE id = ?`, proVerID).Scan(&proID, &ver)
 	if err != nil {
 		return err
 	}
 
-	// Delete man_rules for acts under this process
+	// Delete man_rules for acts under this version
 	_, _ = s.db.ExecContext(ctx,
-		`DELETE FROM man_rule WHERE act_id IN (SELECT id FROM act WHERE pro_id = ?)`, proID)
+		`DELETE FROM man_rule WHERE act_id IN (SELECT id FROM act WHERE pro_id = ? AND act_ver = ?)`, proID, ver)
 
-	// Delete acts
-	_, err = s.db.ExecContext(ctx, `DELETE FROM act WHERE pro_id = ?`, proID)
+	// Delete acts for this version only
+	_, err = s.db.ExecContext(ctx, `DELETE FROM act WHERE pro_id = ? AND act_ver = ?`, proID, ver)
 	return err
 }
 

@@ -25,6 +25,9 @@ type Engine struct {
 	// First activity
 	firstAct *Act
 
+	// Snapshot man rules (for released versions)
+	manRules map[string]*ManRule // act name -> man rule
+
 	store Store
 
 	// Optional components
@@ -96,6 +99,17 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		actsByID[a.ID] = a
 	}
 
+	// Load man rules from snapshot for released versions, else from DB
+	manRules := make(map[string]*ManRule)
+	if proVer.IsRelease && proVer.Snapshot != "" {
+		snapManRules := proVer.SnapshotManRules()
+		for _, r := range snapManRules {
+			if a, ok := actsByID[r.ActID]; ok {
+				manRules[a.Name] = r
+			}
+		}
+	}
+
 	// Populate act references on links
 	outLinks := make(map[string][]*Link)
 	for _, l := range links {
@@ -116,6 +130,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		links:            links,
 		outLinks:         outLinks,
 		firstAct:         firstAct,
+		manRules:         manRules,
 		store:            cfg.Store,
 		hookRouter:       cfg.HookRouter,
 		handlerResolver:  handlerResolver,
@@ -251,24 +266,46 @@ func (s *Session) PreSubmit() (*SubmitInfo, error) {
 	if s.state != SessionStateHandle {
 		return nil, fmt.Errorf("cannot pre-submit in state %d", s.state)
 	}
-	return s.doSubmit("", false)
+
+	// Read-only preview — no writes to DB
+	stater := &submitEngine{
+		session:   s,
+		store:     s.store,
+		pro:       s.eng.pro,
+		acts:      s.eng.acts,
+		actsByID:  s.eng.actsByID,
+		outLinks:  s.eng.outLinks,
+		submitInfo: &SubmitInfo{},
+		hookRouter: s.eng.hookRouter,
+		handlerResolver: s.eng.handlerResolver,
+	}
+
+	// Fire BEF_SUBMIT hook for validation
+	if s.eng.hookRouter != nil {
+		feedback := s.eng.hookRouter.DoHook(s.ctx, ThroughBefSubmit)
+		if feedback == FeedbackAbandon {
+			return nil, fmt.Errorf("submission abandoned by hook")
+		}
+	}
+
+	return stater.readOnlyPreview(s.ctx)
 }
 
 // Submit submits the entity to the next activity.
-func (s *Session) Submit() (*SubmitInfo, error) {
+func (s *Session) Submit(taskID ...string) (*SubmitInfo, error) {
 	if s.state != SessionStateHandle {
 		return nil, fmt.Errorf("cannot submit in state %d", s.state)
 	}
-	return s.doSubmit("", true)
+	return s.doSubmit("", true, taskID...)
 }
 
 // SubmitWith submits the entity with a decision label.
 // The decision is used by gotoNext to select among links with matching decision_filter.
-func (s *Session) SubmitWith(decision string) (*SubmitInfo, error) {
+func (s *Session) SubmitWith(decision string, taskID ...string) (*SubmitInfo, error) {
 	if s.state != SessionStateHandle {
 		return nil, fmt.Errorf("cannot submit in state %d", s.state)
 	}
-	return s.doSubmit(decision, true)
+	return s.doSubmit(decision, true, taskID...)
 }
 
 // ─── Internal: State Machine Transitions ──────────────────────────────────────
@@ -287,13 +324,18 @@ func (s *Session) doSave() error {
 	return nil
 }
 
-func (s *Session) doSubmit(decision string, isTrue bool) (*SubmitInfo, error) {
+func (s *Session) doSubmit(decision string, isTrue bool, taskID ...string) (*SubmitInfo, error) {
 	// Fire BEF_SUBMIT hook
 	if s.eng.hookRouter != nil {
 		feedback := s.eng.hookRouter.DoHook(s.ctx, ThroughBefSubmit)
 		if feedback == FeedbackAbandon {
 			return nil, fmt.Errorf("submission abandoned by hook")
 		}
+	}
+
+	tid := ""
+	if len(taskID) > 0 {
+		tid = taskID[0]
 	}
 
 	stater := &submitEngine{
@@ -304,6 +346,7 @@ func (s *Session) doSubmit(decision string, isTrue bool) (*SubmitInfo, error) {
 		actsByID:  s.eng.actsByID,
 		outLinks:  s.eng.outLinks,
 		decision:  decision,
+		taskID:    tid,
 		submitInfo: &SubmitInfo{},
 		hookRouter: s.eng.hookRouter,
 		handlerResolver: s.eng.handlerResolver,
@@ -345,6 +388,7 @@ type submitEngine struct {
 	outLinks   map[string][]*Link
 	decision   string // decision label from submitter, used for decision_filter matching
 	submitInfo *SubmitInfo
+	taskID     string // optional – if set, enforce task ownership in execute()
 	hookRouter *HookRouter
 	handlerResolver HandlerResolver
 }
@@ -385,6 +429,21 @@ func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
 		return nil, fmt.Errorf("no active task found")
 	}
 
+	// If a specific taskID is provided, verify it matches an active task
+	if se.taskID != "" {
+		var matched bool
+		for _, t := range tasks {
+			if t.ID == se.taskID && (t.State == TaskStateTODO || t.State == TaskStatePROCESSING) {
+				curTask = t
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return nil, fmt.Errorf("task %s not found or not active", se.taskID)
+		}
+	}
+
 	// Complete the current task
 	curTask.State = TaskStateOVER
 	now := time.Now().UTC()
@@ -396,6 +455,15 @@ func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
 	// Update handle log
 	if err := se.store.UpdateHandleLogFinish(ctx, curTask.ID, now.Unix()); err != nil {
 		return nil, fmt.Errorf("update handle log: %w", err)
+	}
+
+	// Clean up the todo for this completed task
+	todos, _ := se.store.GetEntityTodos(ctx, entity.ID)
+	for _, todo := range todos {
+		if todo.TaskID == curTask.ID {
+			_ = se.store.DeleteTodo(ctx, todo.ID)
+			break
+		}
 	}
 
 	se.submitInfo.DoneTask = curTask
@@ -418,6 +486,40 @@ func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
 
 	// Find next activities
 	return se.gotoNext(ctx, entity, curTask)
+}
+
+// readOnlyPreview validates submission without writing anything to the store.
+// It returns a SubmitInfo with the active task that would be completed.
+func (se *submitEngine) readOnlyPreview(ctx context.Context) (*SubmitInfo, error) {
+	entity := se.session.entity
+
+	// Validate entity state
+	liveEnt, err := se.store.GetEntity(ctx, entity.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get entity for validation: %w", err)
+	}
+	if liveEnt == nil {
+		return nil, fmt.Errorf("entity not found")
+	}
+
+	// Get current tasks for this entity
+	tasks, err := se.store.GetTasksByEntity(ctx, entity.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get tasks: %w", err)
+	}
+
+	// Find current (active) task
+	curTask := findActiveTask(tasks)
+	if curTask == nil {
+		return nil, fmt.Errorf("no active task found")
+	}
+
+	// Return preview info without writing anything
+	se.submitInfo = &SubmitInfo{
+		DoneTask: curTask,
+	}
+
+	return se.submitInfo, nil
 }
 
 func (se *submitEngine) gotoNext(ctx context.Context, entity *Entity, curTask *Task) (*SubmitInfo, error) {
@@ -476,9 +578,20 @@ func (se *submitEngine) doSwitch(ctx context.Context, entity *Entity, curTask *T
 // ─── Activity Type Handlers ───────────────────────────────────────────────────
 
 func (se *submitEngine) gotoManualAct(ctx context.Context, entity *Entity, curTask *Task, link *Link) (*SubmitInfo, error) {
-	rule, err := se.store.GetManRule(ctx, link.Act.ID)
-	if err != nil {
-		return nil, fmt.Errorf("get man rule: %w", err)
+	var rule *ManRule
+	// Use snapshot man rules (released version) or load from DB
+	eng := se.session.eng
+	if eng.proVer.IsRelease && len(eng.manRules) > 0 {
+		if r, ok := eng.manRules[link.Act.Name]; ok {
+			rule = r
+		}
+	}
+	if rule == nil {
+		var err error
+		rule, err = se.store.GetManRule(ctx, link.Act.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get man rule: %w", err)
+		}
 	}
 	if rule == nil {
 		return nil, fmt.Errorf("no manual rule for act %s", link.Act.ID)

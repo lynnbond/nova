@@ -1207,9 +1207,9 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 
 	var si *nova.SubmitInfo
 	if decision != "" {
-		si, err = sess.SubmitWith(decision)
+		si, err = sess.SubmitWith(decision, todo.TaskID)
 	} else {
-		si, err = sess.Submit()
+		si, err = sess.Submit(todo.TaskID)
 	}
 	if err != nil {
 		errJSON(w, http.StatusBadRequest, err.Error())
