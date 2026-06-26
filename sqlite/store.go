@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -263,6 +264,29 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS form_def (
+    id          TEXT PRIMARY KEY,
+    act_id      TEXT NOT NULL DEFAULT '',
+    ver         INTEGER NOT NULL DEFAULT 1,
+    title       TEXT NOT NULL DEFAULT '',
+    fields_json TEXT NOT NULL DEFAULT '[]',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_form_def_act ON form_def(act_id);
+
+CREATE TABLE IF NOT EXISTS form_response (
+    id          TEXT PRIMARY KEY,
+    entity_id   TEXT NOT NULL,
+    task_id     TEXT NOT NULL DEFAULT '',
+    act_id      TEXT NOT NULL DEFAULT '',
+    form_def_id TEXT NOT NULL DEFAULT '',
+    data_json   TEXT NOT NULL DEFAULT '{}',
+    handler_uid TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_form_resp_entity ON form_response(entity_id, task_id);
 
 CREATE TABLE IF NOT EXISTS notification (
     id          TEXT PRIMARY KEY,
@@ -1491,4 +1515,119 @@ func (s *Store) MarkAllNotificationsRead(ctx context.Context, uid string) error 
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	_, err := s.db.ExecContext(ctx, `UPDATE notification SET is_read = 1, read_at = ? WHERE target_uid = ? AND is_read = 0`, now, uid)
 	return err
+}
+
+// ─── Form ─────────────────────────────────────────────────────────────────
+
+func (s *Store) SaveFormDef(ctx context.Context, f *nova.FormDef) error {
+	if f.ID == "" {
+		f.ID = newUUID()
+	}
+	fieldsJSON, err := json.Marshal(f.Fields)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	// UPSERT: INSERT OR REPLACE since we version with act
+	_, err = s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO form_def (id, act_id, ver, title, fields_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM form_def WHERE act_id = ?), ?), ?)`,
+		f.ID, f.ActID, f.Ver, f.Title, string(fieldsJSON), f.ActID, now, now)
+	return err
+}
+
+func (s *Store) GetFormDef(ctx context.Context, id string) (*nova.FormDef, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, act_id, ver, title, fields_json FROM form_def WHERE id = ?`, id)
+	return scanFormDef(row)
+}
+
+func (s *Store) GetFormDefByAct(ctx context.Context, actID string) (*nova.FormDef, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, act_id, ver, title, fields_json FROM form_def WHERE act_id = ?`, actID)
+	return scanFormDef(row)
+}
+
+func (s *Store) DeleteFormDef(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM form_def WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) SaveFormResponse(ctx context.Context, r *nova.FormResponse) error {
+	if r.ID == "" {
+		r.ID = newUUID()
+	}
+	dataJSON, err := json.Marshal(r.Data)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err = s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO form_response (id, entity_id, task_id, act_id, form_def_id, data_json, handler_uid, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.EntityID, r.TaskID, r.ActID, r.FormDefID, string(dataJSON), r.HandlerUID, now)
+	return err
+}
+
+func (s *Store) GetFormResponse(ctx context.Context, entityID, taskID string) (*nova.FormResponse, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, task_id, act_id, form_def_id, data_json, handler_uid, created_at
+		 FROM form_response WHERE entity_id = ? AND task_id = ?`, entityID, taskID)
+	return scanFormResponse(row)
+}
+
+func (s *Store) GetEntityFormResponses(ctx context.Context, entityID string) ([]*nova.FormResponse, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, task_id, act_id, form_def_id, data_json, handler_uid, created_at
+		 FROM form_response WHERE entity_id = ? ORDER BY created_at`, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var resp []*nova.FormResponse
+	for rows.Next() {
+		r, err := scanFormResponse(rows)
+		if err != nil {
+			return nil, err
+		}
+		resp = append(resp, r)
+	}
+	return resp, nil
+}
+
+func scanFormDef(row interface{ Scan(dest ...any) error }) (*nova.FormDef, error) {
+	var f nova.FormDef
+	var fieldsJSON string
+	if err := row.Scan(&f.ID, &f.ActID, &f.Ver, &f.Title, &fieldsJSON); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if fieldsJSON != "" {
+		json.Unmarshal([]byte(fieldsJSON), &f.Fields)
+	}
+	if f.Fields == nil {
+		f.Fields = []nova.FieldDef{}
+	}
+	return &f, nil
+}
+
+func scanFormResponse(row interface{ Scan(dest ...any) error }) (*nova.FormResponse, error) {
+	var r nova.FormResponse
+	var dataJSON, createdAt string
+	if err := row.Scan(&r.ID, &r.EntityID, &r.TaskID, &r.ActID, &r.FormDefID, &dataJSON, &r.HandlerUID, &createdAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if dataJSON != "" {
+		json.Unmarshal([]byte(dataJSON), &r.Data)
+	}
+	if r.Data == nil {
+		r.Data = map[string]string{}
+	}
+	r.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+	return &r, nil
 }

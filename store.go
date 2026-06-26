@@ -92,6 +92,16 @@ type Store interface {
 	MarkNotificationRead(ctx context.Context, id string) error
 	MarkAllNotificationsRead(ctx context.Context, uid string) error
 
+	// ── Form (core) ─────────────────────────────────────────────────────
+
+	SaveFormDef(ctx context.Context, f *FormDef) error
+	GetFormDef(ctx context.Context, id string) (*FormDef, error)
+	GetFormDefByAct(ctx context.Context, actID string) (*FormDef, error)
+	DeleteFormDef(ctx context.Context, id string) error
+	SaveFormResponse(ctx context.Context, r *FormResponse) error
+	GetFormResponse(ctx context.Context, entityID, taskID string) (*FormResponse, error)
+	GetEntityFormResponses(ctx context.Context, entityID string) ([]*FormResponse, error)
+
 	// ── Close ───────────────────────────────────────────────────────────
 
 	Close() error

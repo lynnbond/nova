@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { authHeaders } from "@/lib/auth";
+import { FormEditor, type FieldDef } from "@/components/form-editor";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080/api/v1";
 
@@ -195,6 +196,8 @@ export function ProcessDesignerPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<Node<FlowNodeData> | null>(null);
+  const [propTab, setPropTab] = useState<"basic" | "form">("basic");
+  const [formFields, setFormFields] = useState<FieldDef[]>([]);
 
   // Load existing process design from API
   useEffect(() => {
@@ -235,7 +238,21 @@ export function ProcessDesignerPage() {
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedNode(node as Node<FlowNodeData>);
-  }, []);
+    setPropTab("basic");
+    // Load form def for this node
+    const d = (node as Node<FlowNodeData>).data;
+    if (d.type === "MANUAL" && proAlias !== "new") {
+      fetch(`${API_BASE}/forms/${d.actName}`, { headers: { ...authHeaders() } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.form?.fields) setFormFields(data.form.fields);
+          else setFormFields([]);
+        })
+        .catch(() => setFormFields([]));
+    } else {
+      setFormFields([]);
+    }
+  }, [proAlias]);
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
@@ -333,6 +350,27 @@ export function ProcessDesignerPage() {
         setProAlias(data.process.alias);
         setVersion(data.ver || data.process.ver);
       }
+
+      // Save form definitions for all MANUAL nodes
+      for (const node of nodes) {
+        const d = node.data;
+        if (d.type !== "MANUAL") continue;
+        // Load form fields for this specific node if they were edited
+        // We save the current formFields only if this node is selected
+        const fields = selectedNode?.id === node.id ? formFields : [];
+        if (fields.length > 0) {
+          await fetch(`${API_BASE}/forms/${d.actName}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({
+              title: `${d.label}表单`,
+              ver: data.ver || data.process.ver,
+              fields,
+            }),
+          });
+        }
+      }
+
       setMsg("✅ 保存成功");
     } catch (err: any) {
       setMsg("❌ 保存失败: " + (err.message || ""));
@@ -472,6 +510,36 @@ export function ProcessDesignerPage() {
               </div>
             </div>
 
+            {/* Tab switcher */}
+            <div className="flex gap-1 rounded-lg bg-muted/50 p-0.5">
+              <button
+                type="button"
+                onClick={() => setPropTab("basic")}
+                className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  propTab === "basic" ? "bg-white text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                基本
+              </button>
+              {selectedNode.data.type === "MANUAL" && (
+                <button
+                  type="button"
+                  onClick={() => setPropTab("form")}
+                  className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    propTab === "form" ? "bg-white text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  表单 {formFields.length > 0 ? `(${formFields.length})` : ""}
+                </button>
+              )}
+            </div>
+
+            {propTab === "form" ? (
+              <FormEditor fields={formFields} onChange={setFormFields} />
+            ) : null}
+
+            {propTab === "basic" && (
+              <>
             {/* Type Badge */}
             <div className={cn("flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium", nodeTypeMeta[selectedNode.data.type].bg, nodeTypeMeta[selectedNode.data.type].color)}>
               {(() => { const I = nodeTypeMeta[selectedNode.data.type].icon; return <I className="h-4 w-4" />; })()}
@@ -536,8 +604,10 @@ export function ProcessDesignerPage() {
             <div className="pt-2">
               <Button size="sm" className="w-full text-xs">应用</Button>
             </div>
-          </div>
-        ) : (
+          </>
+        )}
+      </div>
+    ) : (
           <div className="flex h-full items-center justify-center text-center text-xs text-muted-foreground px-6">
             点击画布中的节点编辑属性<br />
             拖拽节点下方的圆点可创建连线

@@ -285,6 +285,13 @@ func (a *App) registerRoutes() {
 	a.mux.Handle("POST /api/v1/notifications/{id}/read", a.authMiddleware(http.HandlerFunc(a.handleMarkNotificationRead)))
 	a.mux.Handle("POST /api/v1/notifications/read-all", a.authMiddleware(http.HandlerFunc(a.handleMarkAllNotificationsRead)))
 
+	// Form API (core — editor is a frontend plugin)
+	a.mux.Handle("GET /api/v1/forms/{act_id}", a.authMiddleware(http.HandlerFunc(a.handleGetFormDef)))
+	a.mux.Handle("POST /api/v1/forms/{act_id}", a.authMiddleware(http.HandlerFunc(a.handleSaveFormDef)))
+	a.mux.Handle("DELETE /api/v1/forms/{act_id}", a.authMiddleware(http.HandlerFunc(a.handleDeleteFormDef)))
+	a.mux.Handle("GET /api/v1/entities/{id}/form", a.authMiddleware(http.HandlerFunc(a.handleGetEntityForm)))
+	a.mux.Handle("POST /api/v1/entities/{id}/form", a.authMiddleware(http.HandlerFunc(a.handleSaveEntityForm)))
+
 	// SPA fallback (no auth)
 	a.mux.HandleFunc("/", a.spaHandler)
 }
@@ -1814,6 +1821,165 @@ func (a *App) handleMarkAllNotificationsRead(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ─── Form Handlers (core — editor is a frontend plugin) ─────────────────
+
+func (a *App) handleGetFormDef(w http.ResponseWriter, r *http.Request) {
+	actID := r.PathValue("act_id")
+	if actID == "" {
+		errJSON(w, http.StatusBadRequest, "act_id required")
+		return
+	}
+	f, err := a.st.GetFormDefByAct(r.Context(), actID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if f == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"form": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"form": f})
+}
+
+func (a *App) handleSaveFormDef(w http.ResponseWriter, r *http.Request) {
+	actID := r.PathValue("act_id")
+	if actID == "" {
+		errJSON(w, http.StatusBadRequest, "act_id required")
+		return
+	}
+	var req struct {
+		Title  string          `json:"title"`
+		Ver    int             `json:"ver"`
+		Fields []nova.FieldDef `json:"fields"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	f := &nova.FormDef{
+		ActID:  actID,
+		Ver:    req.Ver,
+		Title:  req.Title,
+		Fields: req.Fields,
+		ID:     r.URL.Query().Get("id"),
+	}
+	if err := a.st.SaveFormDef(r.Context(), f); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"form": f})
+}
+
+func (a *App) handleDeleteFormDef(w http.ResponseWriter, r *http.Request) {
+	actID := r.PathValue("act_id")
+	if actID == "" {
+		errJSON(w, http.StatusBadRequest, "act_id required")
+		return
+	}
+	f, err := a.st.GetFormDefByAct(r.Context(), actID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if f != nil {
+		a.st.DeleteFormDef(r.Context(), f.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (a *App) handleGetEntityForm(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errJSON(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ctx := r.Context()
+	ent, _ := a.st.GetEntity(ctx, id)
+	if ent == nil {
+		errJSON(w, http.StatusNotFound, "entity not found")
+		return
+	}
+
+	// Find active task
+	tasks, _ := a.st.GetTasksByEntity(ctx, id)
+	var activeTask *nova.Task
+	for _, t := range tasks {
+		if t.State != nova.TaskStateOVER {
+			activeTask = t
+			break
+		}
+	}
+
+	var formDef *nova.FormDef
+	var formResp *nova.FormResponse
+
+	if activeTask != nil {
+		formDef, _ = a.st.GetFormDefByAct(ctx, activeTask.ActID)
+		if formDef != nil {
+			formResp, _ = a.st.GetFormResponse(ctx, id, activeTask.ID)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"form_def":  formDef,
+		"response":  formResp,
+		"task_id":   activeTask.ID,
+		"act_title": activeTask.ActTitle,
+	})
+}
+
+func (a *App) handleSaveEntityForm(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errJSON(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	handlerUID, _, _ := nova.CurHandler(r.Context())
+	if handlerUID == "" {
+		handlerUID = "unknown"
+	}
+
+	var req struct {
+		TaskID string            `json:"task_id"`
+		Data   map[string]string `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.TaskID == "" {
+		errJSON(w, http.StatusBadRequest, "task_id required")
+		return
+	}
+
+	// Get task to find act_id
+	task, _ := a.st.GetTask(r.Context(), req.TaskID)
+	if task == nil {
+		errJSON(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	formDef, _ := a.st.GetFormDefByAct(r.Context(), task.ActID)
+	if formDef == nil {
+		errJSON(w, http.StatusBadRequest, "no form defined for this activity")
+		return
+	}
+
+	resp := &nova.FormResponse{
+		EntityID:   id,
+		TaskID:     req.TaskID,
+		ActID:      task.ActID,
+		FormDefID:  formDef.ID,
+		Data:       req.Data,
+		HandlerUID: handlerUID,
+	}
+	if err := a.st.SaveFormResponse(r.Context(), resp); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"response": resp})
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

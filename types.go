@@ -433,6 +433,59 @@ type HandlerRef struct {
 	Dept  string
 }
 
+// ─── Form (core — tables in engine, editor is a plugin) ─────────────────
+
+// FieldType defines the type of a form field.
+type FieldType string
+
+const (
+	FieldText     FieldType = "text"
+	FieldTextarea FieldType = "textarea"
+	FieldNumber   FieldType = "number"
+	FieldSelect   FieldType = "select"
+	FieldCheckbox FieldType = "checkbox"
+	FieldDate     FieldType = "date"
+	FieldFile     FieldType = "file"
+	FieldAI       FieldType = "ai_text" // AI-assisted fill
+)
+
+// FieldDef defines a single field within a form.
+type FieldDef struct {
+	ID          string    `json:"id"`
+	Label       string    `json:"label"`
+	Type        FieldType `json:"type"`
+	Required    bool      `json:"required"`
+	Default     string    `json:"default,omitempty"`
+	Options     []string  `json:"options,omitempty"`     // for select/checkbox
+	Placeholder string    `json:"placeholder,omitempty"`
+	AIHint      string    `json:"ai_hint,omitempty"`     // hint for LLM auto-fill
+	Order       int       `json:"order"`
+	MinLength   int       `json:"min_length,omitempty"`
+	MaxLength   int       `json:"max_length,omitempty"`
+}
+
+// FormDef defines a form bound to an activity (versioned with the process).
+// The editor is a UI plugin; Nova works without it.
+type FormDef struct {
+	ID     string     `json:"id"`     // UUID
+	ActID  string     `json:"act_id"` // FK to act
+	Ver    int        `json:"ver"`    // version (same as process version)
+	Title  string     `json:"title"`
+	Fields []FieldDef `json:"fields"`
+}
+
+// FormResponse stores submitted form data for an entity+task.
+type FormResponse struct {
+	ID         string            `json:"id"`
+	EntityID   string            `json:"entity_id"`
+	TaskID     string            `json:"task_id"`
+	ActID      string            `json:"act_id"`
+	FormDefID  string            `json:"form_def_id"`
+	Data       map[string]string `json:"data"` // field_id → value
+	HandlerUID string            `json:"handler_uid"`
+	CreatedAt  time.Time         `json:"created_at"`
+}
+
 // ─── Notification ─────────────────────────────────────────────────────────
 
 // Notification represents a notification event for a user.
