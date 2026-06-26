@@ -827,13 +827,20 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 		return nil, 0, fmt.Errorf("get current ver: %w", err)
 	}
 
-	// Delete old acts and links
+	// Delete old acts and links (only if no active entities reference this version)
 	if oldPv != nil {
-		if err := a.st.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
-			return nil, 0, fmt.Errorf("delete old links: %w", err)
+		ents, err := a.st.GetEntitiesByProVer(ctx, oldPv.ID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("check entities for version: %w", err)
 		}
-		if err := a.st.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
-			return nil, 0, fmt.Errorf("delete old acts: %w", err)
+		if len(ents) == 0 {
+			// Safe to delete — no active entities reference this version
+			if err := a.st.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
+				return nil, 0, fmt.Errorf("delete old links: %w", err)
+			}
+			if err := a.st.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
+				return nil, 0, fmt.Errorf("delete old acts: %w", err)
+			}
 		}
 	}
 

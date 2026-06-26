@@ -515,6 +515,28 @@ func (s *Store) GetEntityByCode(ctx context.Context, code string) (*nova.Entity,
 		 FROM entity WHERE code = ?`, code))
 }
 
+// GetEntitiesByProVer returns all entities that reference the given ProVer ID.
+func (s *Store) GetEntitiesByProVer(ctx context.Context, proVerID string) ([]*nova.Entity, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, code, pro_id, pro_ver, pro_ver_id, title, state, draft_uid, draft_name, draft_dept,
+		        parent_id, serial_num, send_at, over_at, created_at, updated_at
+		 FROM entity WHERE pro_ver_id = ? ORDER BY seq DESC`, proVerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entities []*nova.Entity
+	for rows.Next() {
+		e, err := scanEntity(rows)
+		if err != nil {
+			return nil, err
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
 func (s *Store) scanEntity(row interface{ Scan(dest ...any) error }) (*nova.Entity, error) {
 	e := &nova.Entity{}
 	var sendAt, overAt, createdAt, updatedAt sql.NullString

@@ -147,6 +147,9 @@ func (e *Engine) FirstAct() *Act { return e.firstAct }
 
 // CreateEntity creates a new draft entity.
 func (e *Engine) CreateEntity(ctx context.Context, code, title string, handlerUID, handlerName, handlerDept string, parentID string) (*Entity, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	ent := &Entity{
 		Code:      code,
 		ProID:     e.pro.ID,
@@ -193,6 +196,9 @@ func (e *Engine) CreateEntity(ctx context.Context, code, title string, handlerUI
 // Session opens a new Session bound to an existing entity.
 // This is the primary API for interacting with a running entity.
 func (e *Engine) Session(ctx context.Context, entityID string, handlerUID, handlerName string) (*Session, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	ent, err := e.store.GetEntity(ctx, entityID)
 	if err != nil {
 		return nil, err
@@ -278,6 +284,7 @@ func (s *Session) PreSubmit() (*SubmitInfo, error) {
 		submitInfo: &SubmitInfo{},
 		hookRouter: s.eng.hookRouter,
 		handlerResolver: s.eng.handlerResolver,
+		waitMap:   make(map[string][]string),
 	}
 
 	// Fire BEF_SUBMIT hook for validation
@@ -350,6 +357,7 @@ func (s *Session) doSubmit(decision string, isTrue bool, taskID ...string) (*Sub
 		submitInfo: &SubmitInfo{},
 		hookRouter: s.eng.hookRouter,
 		handlerResolver: s.eng.handlerResolver,
+		waitMap:   make(map[string][]string),
 	}
 
 	var si *SubmitInfo
@@ -391,6 +399,7 @@ type submitEngine struct {
 	taskID     string // optional – if set, enforce task ownership in execute()
 	hookRouter *HookRouter
 	handlerResolver HandlerResolver
+	waitMap    map[string][]string // per-submit local cache: actID → wait act names (replaces Act.WaitingList)
 }
 
 func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
@@ -415,6 +424,13 @@ func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
 		entity.State = liveEnt.State // sync cached entity with live state
 	} else {
 		// PreSubmit is read-only; just verify entity exists
+	}
+
+	// Seed waitMap from all acts' WaitActs configuration
+	for _, act := range se.acts {
+		if len(act.WaitActs) > 0 {
+			se.waitMap[act.ID] = append(se.waitMap[act.ID], act.WaitActs...)
+		}
 	}
 
 	// Get current tasks for this entity
@@ -458,10 +474,15 @@ func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
 	}
 
 	// Clean up the todo for this completed task
-	todos, _ := se.store.GetEntityTodos(ctx, entity.ID)
+	todos, err := se.store.GetEntityTodos(ctx, entity.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get todos for cleanup: %w", err)
+	}
 	for _, todo := range todos {
 		if todo.TaskID == curTask.ID {
-			_ = se.store.DeleteTodo(ctx, todo.ID)
+			if err := se.store.DeleteTodo(ctx, todo.ID); err != nil {
+				return nil, fmt.Errorf("cleanup todo: %w", err)
+			}
 			break
 		}
 	}
@@ -723,8 +744,10 @@ func (se *submitEngine) gotoRouterAct(ctx context.Context, entity *Entity, curTa
 	}
 
 	for _, nextLink := range nextList {
-		// Propagate waiting list
-		nextLink.Act.WaitingList = append(nextLink.Act.WaitingList, link.Act.WaitingList...)
+		// Propagate waiting list via per-submit cache
+		if list, ok := se.waitMap[link.Act.ID]; ok {
+			se.waitMap[nextLink.Act.ID] = append(se.waitMap[nextLink.Act.ID], list...)
+		}
 
 		// Record step for the router transition
 		step := &Step{
@@ -849,7 +872,10 @@ func (se *submitEngine) gotoWaitingAct(ctx context.Context, entity *Entity, curT
 		if err := se.store.CreateStep(ctx, step); err != nil {
 			return nil, fmt.Errorf("create wait step: %w", err)
 		}
-		nextLink.Act.WaitingList = append(nextLink.Act.WaitingList, link.Act.WaitingList...)
+		// Propagate waiting list via per-submit cache
+		if list, ok := se.waitMap[link.Act.ID]; ok {
+			se.waitMap[nextLink.Act.ID] = append(se.waitMap[nextLink.Act.ID], list...)
+		}
 		return se.doSwitch(ctx, entity, curTask, nextLink)
 	}
 
@@ -862,7 +888,10 @@ func (se *submitEngine) gotoWaitingAct(ctx context.Context, entity *Entity, curT
 	if err := se.store.CreateStep(ctx, step); err != nil {
 		return nil, fmt.Errorf("create wait step: %w", err)
 	}
-	nextLink.Act.WaitingList = append(nextLink.Act.WaitingList, link.Act.WaitingList...)
+	// Propagate waiting list via per-submit cache
+	if list, ok := se.waitMap[link.Act.ID]; ok {
+		se.waitMap[nextLink.Act.ID] = append(se.waitMap[nextLink.Act.ID], list...)
+	}
 	return se.doSwitch(ctx, entity, curTask, nextLink)
 }
 
@@ -885,9 +914,12 @@ func (se *submitEngine) gotoEndAct(ctx context.Context, entity *Entity, curTask 
 
 	// Clean up todos
 	todos, err := se.store.GetEntityTodos(ctx, entity.ID)
-	if err == nil {
-		for _, todo := range todos {
-			_ = se.store.DeleteTodo(ctx, todo.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get todos for end cleanup: %w", err)
+	}
+	for _, todo := range todos {
+		if err := se.store.DeleteTodo(ctx, todo.ID); err != nil {
+			return nil, fmt.Errorf("cleanup todo at end: %w", err)
 		}
 	}
 
