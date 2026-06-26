@@ -718,6 +718,18 @@ func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Advance pro.Ver to make this the active version
+	pro, err = a.st.GetProByAlias(ctx, alias)
+	if err != nil || pro == nil {
+		errJSON(w, http.StatusInternalServerError, "get pro after publish")
+		return
+	}
+	pro.Ver = pro.Ver + 1
+	if err := a.st.UpdatePro(ctx, pro); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	// Rebuild engine for this process (will load from snapshot)
 	eng, err := nova.NewEngine(ctx, nova.EngineConfig{Store: a.st, ProAlias: alias})
 	if err != nil {
@@ -827,20 +839,23 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 		return nil, 0, fmt.Errorf("get current ver: %w", err)
 	}
 
-	// Delete old acts and links (only if no active entities reference this version)
+	// Check for active entities before delete
+	var canDeleteOld bool
 	if oldPv != nil {
 		ents, err := a.st.GetEntitiesByProVer(ctx, oldPv.ID)
 		if err != nil {
 			return nil, 0, fmt.Errorf("check entities for version: %w", err)
 		}
-		if len(ents) == 0 {
-			// Safe to delete — no active entities reference this version
-			if err := a.st.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
-				return nil, 0, fmt.Errorf("delete old links: %w", err)
-			}
-			if err := a.st.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
-				return nil, 0, fmt.Errorf("delete old acts: %w", err)
-			}
+		canDeleteOld = len(ents) == 0
+	}
+
+	// Delete old acts and links (only if no active entities)
+	if oldPv != nil && canDeleteOld {
+		if err := a.st.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
+			return nil, 0, fmt.Errorf("delete old links: %w", err)
+		}
+		if err := a.st.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
+			return nil, 0, fmt.Errorf("delete old acts: %w", err)
 		}
 	}
 
@@ -900,9 +915,8 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 		}
 	}
 
-	// Update pro.Ver
+	// Update pro name only — DO NOT advance pro.Ver (draft stays unpublished)
 	pro.Name = name
-	pro.Ver = nextVer
 	if err := a.st.UpdatePro(ctx, pro); err != nil {
 		return nil, 0, fmt.Errorf("update pro: %w", err)
 	}
