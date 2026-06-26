@@ -49,6 +49,33 @@ func Open(cfg Config) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// ExecTx runs fn inside a transaction. Since we use MaxOpenConns=1,
+// BEGIN/COMMIT on the same connection correctly scopes the transaction.
+// Rolls back on error (or panic), commits on success.
+func (s *Store) ExecTx(ctx context.Context, fn func(nova.Store) error) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.db.ExecContext(ctx, "BEGIN")
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			s.db.ExecContext(ctx, "ROLLBACK")
+			panic(p) // re-panic after rollback
+		}
+		if err != nil {
+			s.db.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	err = fn(s)
+	if err != nil {
+		return err // defer handles rollback
+	}
+	_, err = s.db.ExecContext(ctx, "COMMIT")
+	return err
+}
+
 // Exec executes a raw SQL statement. Used for seeding/admin operations.
 func (s *Store) Exec(query string, args ...any) error {
 	s.mu.Lock()
@@ -95,6 +122,7 @@ CREATE TABLE IF NOT EXISTS pro_ver (
     pro_id      TEXT NOT NULL REFERENCES process(id),
     ver         INTEGER NOT NULL DEFAULT 1,
     is_release  INTEGER NOT NULL DEFAULT 0,
+    snapshot    TEXT NOT NULL DEFAULT '',
     UNIQUE(pro_id, ver)
 );
 
@@ -314,6 +342,12 @@ func (s *Store) migrate() error {
 	if colCount == 0 {
 		s.db.Exec(`ALTER TABLE act_link ADD COLUMN decision_filter TEXT NOT NULL DEFAULT ''`)
 	}
+
+	// Migration: add snapshot column to pro_ver (existing DBs)
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pro_ver') WHERE name = 'snapshot'`).Scan(&colCount)
+	if colCount == 0 {
+		s.db.Exec(`ALTER TABLE pro_ver ADD COLUMN snapshot TEXT NOT NULL DEFAULT ''`)
+	}
 	return nil
 }
 
@@ -343,9 +377,9 @@ func (s *Store) GetProByAlias(ctx context.Context, alias string) (*nova.Pro, err
 
 func (s *Store) GetProVer(ctx context.Context, proID string, ver int) (*nova.ProVer, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, pro_id, ver, is_release FROM pro_ver WHERE pro_id = ? AND ver = ?`, proID, ver)
+		`SELECT id, pro_id, ver, is_release, snapshot FROM pro_ver WHERE pro_id = ? AND ver = ?`, proID, ver)
 	pv := &nova.ProVer{}
-	err := row.Scan(&pv.ID, &pv.ProID, &pv.Ver, &pv.IsRelease)
+	err := row.Scan(&pv.ID, &pv.ProID, &pv.Ver, &pv.IsRelease, &pv.Snapshot)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -645,6 +679,29 @@ func (s *Store) CreateTodo(ctx context.Context, t *nova.Todo) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) GetTodo(ctx context.Context, id string) (*nova.Todo, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, task_id, entity_id, act_id, pro_id, handler_uid, handler_name,
+		        sender_uid, sender_name, act_title, entity_title, pro_name,
+		        arrive_at, accept_at, accepted, todo_key, created_at
+		 FROM run_todo WHERE id = ?`, id)
+	var t nova.Todo
+	var arriveAt, acceptAt, createdAt sql.NullString
+	err := row.Scan(&t.ID, &t.TaskID, &t.EntityID, &t.ActID, &t.ProID,
+		&t.HandlerUID, &t.HandlerName, &t.SenderUID, &t.SenderName,
+		&t.ActTitle, &t.EntityTitle, &t.ProName,
+		&arriveAt, &acceptAt, &t.Accepted, &t.TodoKey, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.ArriveAt = parseTime(arriveAt)
+	t.AcceptAt = parseTime(acceptAt)
+	return &t, nil
 }
 
 func (s *Store) GetEntityTodos(ctx context.Context, entityID string) ([]*nova.Todo, error) {
@@ -996,11 +1053,18 @@ func (s *Store) UpdatePro(ctx context.Context, p *nova.Pro) error {
 	return err
 }
 
+func (s *Store) UpdateProVerSnapshot(ctx context.Context, pv *nova.ProVer) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE pro_ver SET is_release = 1, snapshot = ? WHERE id = ?`,
+		pv.Snapshot, pv.ID)
+	return err
+}
+
 func (s *Store) ListProVers(ctx context.Context, proID string) ([]*nova.ProVer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, seq, pro_id, ver, is_release FROM pro_ver WHERE pro_id = ? ORDER BY ver`, proID)
+		`SELECT id, seq, pro_id, ver, is_release, snapshot FROM pro_ver WHERE pro_id = ? ORDER BY ver`, proID)
 	if err != nil {
 		return nil, err
 	}
@@ -1009,7 +1073,7 @@ func (s *Store) ListProVers(ctx context.Context, proID string) ([]*nova.ProVer, 
 	for rows.Next() {
 		pv := &nova.ProVer{}
 		var release int
-		if err := rows.Scan(&pv.ID, &pv.Seq, &pv.ProID, &pv.Ver, &release); err != nil {
+		if err := rows.Scan(&pv.ID, &pv.Seq, &pv.ProID, &pv.Ver, &release, &pv.Snapshot); err != nil {
 			return nil, err
 		}
 		pv.IsRelease = release != 0
@@ -1626,7 +1690,7 @@ func scanFormResponse(row interface{ Scan(dest ...any) error }) (*nova.FormRespo
 		json.Unmarshal([]byte(dataJSON), &r.Data)
 	}
 	if r.Data == nil {
-		r.Data = map[string]string{}
+		r.Data = map[string]any{}
 	}
 	r.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
 	return &r, nil

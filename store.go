@@ -24,6 +24,7 @@ type Store interface {
 	DeleteLinksByProVer(ctx context.Context, proVerID string) error
 	DeleteManRulesByAct(ctx context.Context, actID string) error
 	UpdatePro(ctx context.Context, p *Pro) error
+	UpdateProVerSnapshot(ctx context.Context, pv *ProVer) error
 	ListProVers(ctx context.Context, proID string) ([]*ProVer, error)
 
 	// ── Entity ──────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ type Store interface {
 	// ── Todo ────────────────────────────────────────────────────────────
 
 	CreateTodo(ctx context.Context, t *Todo) error
+	GetTodo(ctx context.Context, id string) (*Todo, error)
 	GetEntityTodos(ctx context.Context, entityID string) ([]*Todo, error)
 	GetUserTodos(ctx context.Context, handlerUID string) ([]*Todo, error)
 	AcceptTodo(ctx context.Context, id string) error
@@ -105,12 +107,21 @@ type Store interface {
 	// ── Close ───────────────────────────────────────────────────────────
 
 	Close() error
+
+	// ExecTx runs fn inside a single database transaction.
+	// Rolls back on error, commits on success. For atomic multi-step operations.
+	ExecTx(ctx context.Context, fn func(Store) error) error
 }
 
 // TxStore extends Store with transactional support.
 type TxStore interface {
 	Store
-	BeginTx(ctx context.Context) (TxStore, error)
 	Commit() error
 	Rollback() error
+}
+
+// StoreWithTx extends Store with the ability to begin a transaction.
+type StoreWithTx interface {
+	Store
+	BeginTx(ctx context.Context) (TxStore, error)
 }

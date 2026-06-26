@@ -28,15 +28,17 @@ type Engine struct {
 	store Store
 
 	// Optional components
-	hookRouter *HookRouter
+	hookRouter       *HookRouter
+	handlerResolver  HandlerResolver
 }
 
 // EngineConfig configures an Engine instance.
 type EngineConfig struct {
-	Store      Store
-	ProAlias   string
-	ProVer     int // 0 = latest
-	HookRouter *HookRouter
+	Store            Store
+	ProAlias         string
+	ProVer           int // 0 = latest
+	HookRouter       *HookRouter
+	HandlerResolver  HandlerResolver // nil = DefaultHandlerResolver
 }
 
 // NewEngine creates a new Engine for the given process definition.
@@ -62,13 +64,28 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("process version not found: %s v%d", cfg.ProAlias, ver)
 	}
 
-	acts, err := cfg.Store.GetActsByProVer(ctx, proVer.ID)
-	if err != nil {
-		return nil, fmt.Errorf("get acts: %w", err)
-	}
-	links, err := cfg.Store.GetLinksByProVer(ctx, proVer.ID)
-	if err != nil {
-		return nil, fmt.Errorf("get links: %w", err)
+	// For released versions with a snapshot, load from immutable snapshot
+	var acts []*Act
+	var links []*Link
+	var firstAct *Act
+
+	if proVer.IsRelease && proVer.Snapshot != "" {
+		acts = proVer.SnapshotActs()
+		links = proVer.SnapshotLinks()
+		firstAct = proVer.SnapshotFirstAct()
+	} else {
+		acts, err = cfg.Store.GetActsByProVer(ctx, proVer.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get acts: %w", err)
+		}
+		links, err = cfg.Store.GetLinksByProVer(ctx, proVer.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get links: %w", err)
+		}
+		firstAct, err = cfg.Store.GetFirstAct(ctx, pro.ID, ver)
+		if err != nil {
+			return nil, fmt.Errorf("get first act: %w", err)
+		}
 	}
 
 	// Build indices
@@ -86,21 +103,22 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		outLinks[l.PrevActID] = append(outLinks[l.PrevActID], l)
 	}
 
-	firstAct, err := cfg.Store.GetFirstAct(ctx, pro.ID, ver)
-	if err != nil {
-		return nil, fmt.Errorf("get first act: %w", err)
+	handlerResolver := cfg.HandlerResolver
+	if handlerResolver == nil {
+		handlerResolver = DefaultHandlerResolver{}
 	}
 
 	return &Engine{
-		pro:        pro,
-		proVer:     proVer,
-		acts:       actsByName,
-		actsByID:   actsByID,
-		links:      links,
-		outLinks:   outLinks,
-		firstAct:   firstAct,
-		store:      cfg.Store,
-		hookRouter: cfg.HookRouter,
+		pro:              pro,
+		proVer:           proVer,
+		acts:             actsByName,
+		actsByID:         actsByID,
+		links:            links,
+		outLinks:         outLinks,
+		firstAct:         firstAct,
+		store:            cfg.Store,
+		hookRouter:       cfg.HookRouter,
+		handlerResolver:  handlerResolver,
 	}, nil
 }
 
@@ -287,12 +305,20 @@ func (s *Session) doSubmit(decision string, isTrue bool) (*SubmitInfo, error) {
 		decision:  decision,
 		submitInfo: &SubmitInfo{},
 		hookRouter: s.eng.hookRouter,
+		handlerResolver: s.eng.handlerResolver,
 	}
 
-	si, err := stater.execute(isTrue)
-	if err != nil {
+	var si *SubmitInfo
+	// Execute within a transaction for atomicity: all-or-nothing.
+	if err := s.store.ExecTx(s.ctx, func(tx Store) error {
+		stater.store = tx
+		var err error
+		si, err = stater.execute(isTrue)
+		return err
+	}); err != nil {
 		return nil, err
 	}
+
 	s.submitInfo = si
 
 	if isTrue {
@@ -319,6 +345,7 @@ type submitEngine struct {
 	decision   string // decision label from submitter, used for decision_filter matching
 	submitInfo *SubmitInfo
 	hookRouter *HookRouter
+	handlerResolver HandlerResolver
 }
 
 func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {
@@ -455,7 +482,10 @@ func (se *submitEngine) gotoManualAct(ctx context.Context, entity *Entity, curTa
 	}
 
 	// Determine handlers
-	handlerSet := defaultHandlerSet(rule, link.Act.Name)
+	handlerSet, err := se.handlerResolver.Resolve(ctx, link.Act, rule)
+	if err != nil {
+		return nil, fmt.Errorf("resolve handlers: %w", err)
+	}
 
 	switch rule.Policy {
 	case ManPolicyCONCURRENT:

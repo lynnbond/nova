@@ -620,7 +620,7 @@ func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the current ProVer (draft) and mark it as released
+	// Get the current ProVer (draft)
 	pv, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
@@ -631,14 +631,48 @@ func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update ProVer is_release to 1
-	// Since there's no UpdateProVer method, we UPDATE via raw SQL on the store
-	if err := a.st.Exec(`UPDATE pro_ver SET is_release = 1 WHERE id = ?`, pv.ID); err != nil {
+	// Snapshot all current acts, links, man_rules, and first_act
+	acts, err := a.st.GetActsByProVer(ctx, pv.ID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	links, err := a.st.GetLinksByProVer(ctx, pv.ID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	firstAct, err := a.st.GetFirstAct(ctx, pro.ID, pro.Ver)
+	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Rebuild engine for this process
+	// Collect man rules for all manual acts
+	var manRules []*nova.ManRule
+	for _, act := range acts {
+		if act.Type == nova.ActTypeMANUAL {
+			rule, _ := a.st.GetManRule(ctx, act.ID)
+			if rule != nil {
+				manRules = append(manRules, rule)
+			}
+		}
+	}
+
+	// Freeze into immutable snapshot
+	pv, err = nova.FreezeProVer(pv, acts, links, manRules, firstAct)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Persist snapshot atomically
+	if err := a.st.UpdateProVerSnapshot(ctx, pv); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Rebuild engine for this process (will load from snapshot)
 	eng, err := nova.NewEngine(ctx, nova.EngineConfig{Store: a.st, ProAlias: alias})
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
@@ -1219,6 +1253,26 @@ func (a *App) handleAcceptTodo(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+
+	// Verify todo exists and belongs to current user
+	todo, err := a.st.GetTodo(r.Context(), id)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if todo == nil {
+		errJSON(w, http.StatusNotFound, "todo not found")
+		return
+	}
+	handlerUID, _, _ := nova.CurHandler(r.Context())
+	if handlerUID == "" {
+		handlerUID = "unknown"
+	}
+	if todo.HandlerUID != handlerUID {
+		errJSON(w, http.StatusForbidden, "该待办不属于当前用户")
+		return
+	}
+
 	if err := a.st.AcceptTodo(r.Context(), id); err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1942,8 +1996,8 @@ func (a *App) handleSaveEntityForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		TaskID string            `json:"task_id"`
-		Data   map[string]string `json:"data"`
+		TaskID string         `json:"task_id"`
+		Data   map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errJSON(w, http.StatusBadRequest, "invalid json")
@@ -1964,6 +2018,13 @@ func (a *App) handleSaveEntityForm(w http.ResponseWriter, r *http.Request) {
 	formDef, _ := a.st.GetFormDefByAct(r.Context(), task.ActID)
 	if formDef == nil {
 		errJSON(w, http.StatusBadRequest, "no form defined for this activity")
+		return
+	}
+
+	// Validate required fields
+	if missing := nova.ValidateFormResponse(formDef, req.Data); len(missing) > 0 {
+		msg := "请填写必填字段：" + strings.Join(missing, "、")
+		errJSON(w, http.StatusBadRequest, msg)
 		return
 	}
 

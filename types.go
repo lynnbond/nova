@@ -5,6 +5,8 @@ package nova
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -196,6 +198,72 @@ type ProVer struct {
 	ProID     string
 	Ver       int
 	IsRelease bool
+	Snapshot  string // JSON snapshot of acts+links+man_rules (set on publish)
+}
+
+// ProVerSnapshot is a frozen copy of a published process version.
+type ProVerSnapshot struct {
+	Acts     []*Act     `json:"acts"`
+	Links    []*Link    `json:"links"`
+	ManRules []*ManRule `json:"man_rules"`
+	FirstAct *Act       `json:"first_act"`
+}
+
+// Freeze snapshots the current process version for immutable publishing.
+func FreezeProVer(pv *ProVer, acts []*Act, links []*Link, manRules []*ManRule, firstAct *Act) (*ProVer, error) {
+	snap := &ProVerSnapshot{
+		Acts:     acts,
+		Links:    links,
+		ManRules: manRules,
+		FirstAct: firstAct,
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return nil, fmt.Errorf("marshal snapshot: %w", err)
+	}
+	pv.Snapshot = string(data)
+	pv.IsRelease = true
+	return pv, nil
+}
+
+// SnapshotActs returns the acts from the snapshot, or nil if no snapshot.
+func (pv *ProVer) SnapshotActs() []*Act {
+	if pv.Snapshot == "" {
+		return nil
+	}
+	var snap ProVerSnapshot
+	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	return snap.Acts
+}
+
+// SnapshotLinks returns the links from the snapshot.
+func (pv *ProVer) SnapshotLinks() []*Link {
+	if pv.Snapshot == "" {
+		return nil
+	}
+	var snap ProVerSnapshot
+	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	return snap.Links
+}
+
+// SnapshotManRules returns the man rules from the snapshot.
+func (pv *ProVer) SnapshotManRules() []*ManRule {
+	if pv.Snapshot == "" {
+		return nil
+	}
+	var snap ProVerSnapshot
+	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	return snap.ManRules
+}
+
+// SnapshotFirstAct returns the first act from the snapshot.
+func (pv *ProVer) SnapshotFirstAct() *Act {
+	if pv.Snapshot == "" {
+		return nil
+	}
+	var snap ProVerSnapshot
+	json.Unmarshal([]byte(pv.Snapshot), &snap)
+	return snap.FirstAct
 }
 
 // ─── Entity / Task / Todo ────────────────────────────────────────────────────
@@ -433,6 +501,41 @@ type HandlerRef struct {
 	Dept  string
 }
 
+// HandlerResolver resolves the actual handler set for a MANUAL activity.
+// Implementations: DefaultHandlerResolver (demo), DB-backed, remote API, HookRouter.
+// Register via EngineConfig.HandlerResolver.
+type HandlerResolver interface {
+	Resolve(ctx context.Context, act *Act, rule *ManRule) ([]HandlerRef, error)
+}
+
+// HandlerResolverFunc is a function adapter for HandlerResolver.
+type HandlerResolverFunc func(ctx context.Context, act *Act, rule *ManRule) ([]HandlerRef, error)
+
+func (f HandlerResolverFunc) Resolve(ctx context.Context, act *Act, rule *ManRule) ([]HandlerRef, error) {
+	return f(ctx, act, rule)
+}
+
+// DefaultHandlerResolver is the built-in resolver.
+// Uses rule.GroupSet for handler pairs when populated, otherwise returns admin as fallback.
+// For production, replace with a DB or API-backed resolver.
+type DefaultHandlerResolver struct{}
+
+func (DefaultHandlerResolver) Resolve(_ context.Context, act *Act, rule *ManRule) ([]HandlerRef, error) {
+	// When GroupSet has handler pairs (UID, Name, UID, Name...), use them
+	if len(rule.GroupSet) > 0 {
+		refs := make([]HandlerRef, 0, len(rule.GroupSet)/2)
+		for i := 0; i+1 < len(rule.GroupSet); i += 2 {
+			refs = append(refs, HandlerRef{UID: rule.GroupSet[i], Name: rule.GroupSet[i+1]})
+		}
+		if len(refs) > 0 {
+			return refs, nil
+		}
+	}
+	// Default fallback
+	_ = act // unused in default impl; production resolvers use act.Name for matching
+	return []HandlerRef{{UID: "admin", Name: "管理员"}}, nil
+}
+
 // ─── Form (core — tables in engine, editor is a plugin) ─────────────────
 
 // FieldType defines the type of a form field.
@@ -476,14 +579,32 @@ type FormDef struct {
 
 // FormResponse stores submitted form data for an entity+task.
 type FormResponse struct {
-	ID         string            `json:"id"`
-	EntityID   string            `json:"entity_id"`
-	TaskID     string            `json:"task_id"`
-	ActID      string            `json:"act_id"`
-	FormDefID  string            `json:"form_def_id"`
-	Data       map[string]string `json:"data"` // field_id → value
-	HandlerUID string            `json:"handler_uid"`
-	CreatedAt  time.Time         `json:"created_at"`
+	ID         string         `json:"id"`
+	EntityID   string         `json:"entity_id"`
+	TaskID     string         `json:"task_id"`
+	ActID      string         `json:"act_id"`
+	FormDefID  string         `json:"form_def_id"`
+	Data       map[string]any `json:"data"` // field_id → typed value (string, float64, []any)
+	HandlerUID string         `json:"handler_uid"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+// ValidateFormResponse checks required fields and basic constraints.
+// Returns a list of field labels that failed validation.
+func ValidateFormResponse(fd *FormDef, data map[string]any) []string {
+	var missing []string
+	fieldByID := make(map[string]*FieldDef, len(fd.Fields))
+	for i := range fd.Fields {
+		f := &fd.Fields[i]
+		fieldByID[f.ID] = f
+		if f.Required {
+			val, ok := data[f.ID]
+			if !ok || val == nil || val == "" {
+				missing = append(missing, f.Label)
+			}
+		}
+	}
+	return missing
 }
 
 // ─── Notification ─────────────────────────────────────────────────────────
