@@ -263,6 +263,21 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS notification (
+    id          TEXT PRIMARY KEY,
+    entity_id   TEXT NOT NULL DEFAULT '',
+    task_id     TEXT NOT NULL DEFAULT '',
+    todo_id     TEXT NOT NULL DEFAULT '',
+    notif_type  TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    content     TEXT NOT NULL DEFAULT '',
+    target_uid  TEXT NOT NULL DEFAULT '',
+    is_read     INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    read_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notif_target ON notification(target_uid, created_at DESC);
 `
 
 func (s *Store) migrate() error {
@@ -1410,4 +1425,70 @@ func scanEntity(row interface{ Scan(...any) error }) (*nova.Entity, error) {
 	}
 
 	return &e, nil
+}
+
+// ─── Notification ─────────────────────────────────────────────────────────
+
+func (s *Store) CreateNotification(ctx context.Context, n *nova.Notification) error {
+	if n.ID == "" {
+		n.ID = newUUID()
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO notification (id, entity_id, task_id, todo_id, notif_type, title, content, target_uid, is_read, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		n.ID, n.EntityID, n.TaskID, n.TodoID, n.NotifType, n.Title, n.Content, n.TargetUID, now)
+	return err
+}
+
+func (s *Store) GetUserNotifications(ctx context.Context, uid string, limit, offset int) ([]*nova.Notification, int, error) {
+	var total int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notification WHERE target_uid = ?`, uid).Scan(&total)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, task_id, todo_id, notif_type, title, content, target_uid, is_read, created_at, read_at
+		 FROM notification WHERE target_uid = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		uid, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var notifs []*nova.Notification
+	for rows.Next() {
+		var n nova.Notification
+		var isRead int
+		var createdAt, readAt sql.NullString
+		if err := rows.Scan(&n.ID, &n.EntityID, &n.TaskID, &n.TodoID, &n.NotifType, &n.Title, &n.Content, &n.TargetUID, &isRead, &createdAt, &readAt); err != nil {
+			return nil, 0, err
+		}
+		n.Read = isRead == 1
+		if createdAt.Valid {
+			n.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt.String)
+		}
+		if readAt.Valid {
+			t, _ := time.Parse("2006-01-02 15:04:05", readAt.String)
+			n.ReadAt = &t
+		}
+		notifs = append(notifs, &n)
+	}
+	return notifs, total, nil
+}
+
+func (s *Store) GetUnreadNotificationCount(ctx context.Context, uid string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notification WHERE target_uid = ? AND is_read = 0`, uid).Scan(&count)
+	return count, err
+}
+
+func (s *Store) MarkNotificationRead(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err := s.db.ExecContext(ctx, `UPDATE notification SET is_read = 1, read_at = ? WHERE id = ?`, now, id)
+	return err
+}
+
+func (s *Store) MarkAllNotificationsRead(ctx context.Context, uid string) error {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err := s.db.ExecContext(ctx, `UPDATE notification SET is_read = 1, read_at = ? WHERE target_uid = ? AND is_read = 0`, now, uid)
+	return err
 }

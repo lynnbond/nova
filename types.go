@@ -428,6 +428,24 @@ type TargetInfo struct {
 
 // HandlerRef identifies a handler.
 type HandlerRef struct {
-	UID  string
-	Name string
+	UID   string
+	Name  string
+	Dept  string
+}
+
+// ─── Notification ─────────────────────────────────────────────────────────
+
+// Notification represents a notification event for a user.
+type Notification struct {
+	ID        string     `json:"id"`
+	EntityID  string     `json:"entity_id"`
+	TaskID    string     `json:"task_id,omitempty"`
+	TodoID    string     `json:"todo_id,omitempty"`
+	NotifType string     `json:"notif_type"` // todo_created, entity_returned, entity_completed, entity_submitted
+	Title     string     `json:"title"`
+	Content   string     `json:"content"`
+	TargetUID string     `json:"target_uid"`
+	Read      bool       `json:"read"`
+	CreatedAt time.Time  `json:"created_at"`
+	ReadAt    *time.Time `json:"read_at,omitempty"`
 }

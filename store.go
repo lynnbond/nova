@@ -84,6 +84,14 @@ type Store interface {
 	DeleteUser(ctx context.Context, id string) error
 	SetPassword(ctx context.Context, userID string, hash string) error
 
+	// ── Notification ────────────────────────────────────────────────────
+
+	CreateNotification(ctx context.Context, n *Notification) error
+	GetUserNotifications(ctx context.Context, uid string, limit, offset int) ([]*Notification, int, error)
+	GetUnreadNotificationCount(ctx context.Context, uid string) (int, error)
+	MarkNotificationRead(ctx context.Context, id string) error
+	MarkAllNotificationsRead(ctx context.Context, uid string) error
+
 	// ── Close ───────────────────────────────────────────────────────────
 
 	Close() error

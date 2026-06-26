@@ -46,6 +46,7 @@ type App struct {
 	engByProID map[string]*nova.Engine // pro ID → engine
 	proAliases []string               // ordered list of known process aliases
 	jwtSecret  []byte
+	notifyMgr  *nova.NotifyManager     // notification dispatcher
 }
 
 func New(cfg Config) (*App, error) {
@@ -71,6 +72,7 @@ func New(cfg Config) (*App, error) {
 		jwtSecret:  []byte(jwtSecret),
 		engines:    make(map[string]*nova.Engine),
 		engByProID: make(map[string]*nova.Engine),
+		notifyMgr:  nova.NewNotifyManager(nova.NewInAppNotifier(st)),
 	}
 	if err := a.seed(); err != nil {
 		return nil, fmt.Errorf("seed: %w", err)
@@ -277,6 +279,11 @@ func (a *App) registerRoutes() {
 	a.mux.Handle("PUT /api/v1/users/{id}", a.authMiddleware(http.HandlerFunc(a.handleUpdateUser)))
 	a.mux.Handle("DELETE /api/v1/users/{id}", a.authMiddleware(http.HandlerFunc(a.handleDeleteUser)))
 	a.mux.Handle("GET /api/v1/me", a.authMiddleware(http.HandlerFunc(a.handleMe)))
+
+	// Notification routes
+	a.mux.Handle("GET /api/v1/notifications", a.authMiddleware(http.HandlerFunc(a.handleListNotifications)))
+	a.mux.Handle("POST /api/v1/notifications/{id}/read", a.authMiddleware(http.HandlerFunc(a.handleMarkNotificationRead)))
+	a.mux.Handle("POST /api/v1/notifications/read-all", a.authMiddleware(http.HandlerFunc(a.handleMarkAllNotificationsRead)))
 
 	// SPA fallback (no auth)
 	a.mux.HandleFunc("/", a.spaHandler)
@@ -1145,6 +1152,34 @@ func (a *App) handleSubmitEntity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Dispatch notifications for new todos
+	if len(si.NewTodos) > 0 {
+		ent, _ := a.st.GetEntity(ctx, id)
+		pro, _ := a.st.GetPro(ctx, ent.ProID)
+		proName := ""
+		if pro != nil { proName = pro.Name }
+		entTitle := ""
+		if ent != nil { entTitle = ent.Title }
+		for _, td := range si.NewTodos {
+			notif := &nova.Notification{
+				EntityID:  id,
+				TaskID:    td.TaskID,
+				TodoID:    td.ID,
+				NotifType: "todo_created",
+				Title:     "新的待办任务",
+				Content:   fmt.Sprintf("工单「%s」已流转到「%s」环节，请处理", entTitle, td.ActTitle),
+				TargetUID: td.HandlerUID,
+			}
+			a.notifyMgr.Dispatch(ctx, notif, map[string]any{
+				"entity_id":    id,
+				"act_title":    td.ActTitle,
+				"pro_name":     proName,
+				"handler_uid":  td.HandlerUID,
+				"handler_name": td.HandlerName,
+			})
+		}
+	}
+
 	resp := map[string]any{
 		"status":    "ok",
 		"new_todos": len(si.NewTodos),
@@ -1469,6 +1504,20 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
+		// Dispatch notification for return
+		a.notifyMgr.Dispatch(ctx, &nova.Notification{
+			EntityID:  id,
+			NotifType: "entity_returned",
+			Title:     "工单被退回",
+			Content:   fmt.Sprintf("工单「%s」已被 %s 退回至「%s」环节", ent.Title, curName, targetAct.Title),
+			TargetUID: targetUID,
+		}, map[string]any{
+			"entity_id":   id,
+			"entity_title": ent.Title,
+			"act_title":   targetAct.Title,
+			"by_handler":  curName,
+		})
+
 		writeJSON(w, http.StatusOK, map[string]any{"status": "returned", "target_act": req.TargetActName, "new_task_id": newTask.ID, "entity_state": "已退回"})
 	}
 
@@ -1695,6 +1744,76 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		"dept": claims.Dept,
 		"seq":  claims.Seq,
 	})
+}
+
+// ─── Notification Handlers ─────────────────────────────────────────────────
+
+func (a *App) handleListNotifications(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	handlerUID, _, _ := nova.CurHandler(ctx)
+	if handlerUID == "" {
+		errJSON(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	page, limit := 1, 20
+	if p := r.URL.Query().Get("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	offset := (page - 1) * limit
+	notifs, total, err := a.st.GetUserNotifications(ctx, handlerUID, limit, offset)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	unread, _ := a.st.GetUnreadNotificationCount(ctx, handlerUID)
+	if notifs == nil {
+		notifs = []*nova.Notification{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"notifications": notifs,
+		"total":         total,
+		"unread":        unread,
+		"page":          page,
+		"limit":         limit,
+	})
+}
+
+func (a *App) handleMarkNotificationRead(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		errJSON(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := a.st.MarkNotificationRead(r.Context(), id); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (a *App) handleMarkAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	handlerUID, _, _ := nova.CurHandler(ctx)
+	if handlerUID == "" {
+		errJSON(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := a.st.MarkAllNotificationsRead(ctx, handlerUID); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useMemo } from "react";
 
 import { CurrentUserPanel } from "@/admin/components/CurrentUserPanel";
+import { NotificationBell } from "@/components/notification-bell";
 import { groups, type NavGroup } from "@/admin/menu-access";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ export function Sidebar() {
               {t("sidebar.unknownApp")}
             </div>
           </div>
+          <NotificationBell />
         </div>
       </div>
       <nav className="flex-1 space-y-6 overflow-y-auto px-4 py-5">
