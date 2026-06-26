@@ -34,8 +34,9 @@ func main() {
 	flag.Parse()
 
 	a, err := app.New(app.Config{
-		DBPath:    *dbPath,
-		JWTSecret: *jwtSecret,
+		DBPath:     *dbPath,
+		JWTSecret:  *jwtSecret,
+		IAMBaseURL: getEnv("IAM_BASE_URL", ""),
 	})
 	if err != nil {
 		log.Fatalf("app init: %v", err)

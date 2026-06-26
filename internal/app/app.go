@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/liyan/nova"
+	"github.com/liyan/nova/internal/iam"
 	"github.com/liyan/nova/sqlite"
 )
 
@@ -31,10 +32,11 @@ const defaultJWTSecret = "nova-dev-secret-do-not-use-in-production"
 
 // Config configures the Nova application.
 type Config struct {
-	DBPath    string
-	JWTSecret string
-	AdminUser string // default admin username (default: "admin")
-	AdminPass string // default admin password (default: "123456")
+	DBPath     string
+	JWTSecret  string
+	AdminUser  string // default admin username (default: "admin")
+	AdminPass  string // default admin password (default: "123456")
+	IAMBaseURL string // IAM Server base URL (e.g. https://test-iam.lingyiwanwu.net)
 }
 
 // App is the self-contained Nova workflow application.
@@ -50,6 +52,7 @@ type App struct {
 	proAliases    []string                // ordered list of known process aliases
 	jwtSecret     []byte
 	notifyMgr     *nova.NotifyManager // notification dispatcher
+	iamClient     *iam.Client         // IAM SSO client (nil when IAM not configured)
 }
 
 func New(cfg Config) (*App, error) {
@@ -77,6 +80,10 @@ func New(cfg Config) (*App, error) {
 		engByProID:    make(map[string]*nova.Engine),
 		engByProVerID: make(map[string]*nova.Engine),
 		notifyMgr:     nova.NewNotifyManager(nova.NewInAppNotifier(st)),
+	}
+	if cfg.IAMBaseURL != "" {
+		a.iamClient = iam.New(cfg.IAMBaseURL)
+		log.Printf("IAM SSO enabled: %s", cfg.IAMBaseURL)
 	}
 	if err := a.seed(); err != nil {
 		return nil, fmt.Errorf("seed: %w", err)
@@ -301,6 +308,7 @@ func (a *App) seed() error {
 func (a *App) registerRoutes() {
 	// Public endpoints
 	a.mux.HandleFunc("POST /api/v1/login", a.handleLogin)
+	a.mux.HandleFunc("POST /api/v1/auth/iam", a.handleAuthIAM)
 
 	// Protected API routes (require JWT)
 	a.mux.Handle("GET /api/v1/processes", a.authMiddleware(http.HandlerFunc(a.handleListProcesses)))
@@ -1992,6 +2000,74 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		errJSON(w, http.StatusUnauthorized, "invalid credentials")
 		return
+	}
+
+	token := a.generateToken(user)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": token,
+		"user": map[string]any{
+			"uid":  user.UID,
+			"name": user.Name,
+			"dept": user.Dept,
+		},
+	})
+}
+
+// handleAuthIAM authenticates via IAM Server SSO.
+// Expects { csrf_token } and validates it against IAM /users/self.
+// On success, creates/updates the local user and returns a nova JWT.
+func (a *App) handleAuthIAM(w http.ResponseWriter, r *http.Request) {
+	if a.iamClient == nil {
+		errJSON(w, http.StatusServiceUnavailable, "IAM SSO not configured")
+		return
+	}
+
+	var req struct {
+		CsrfToken string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.CsrfToken == "" {
+		errJSON(w, http.StatusBadRequest, "csrf_token required")
+		return
+	}
+
+	// Validate token against IAM
+	iamUser, err := a.iamClient.GetUserByToken(r.Context(), req.CsrfToken)
+	if err != nil {
+		log.Printf("IAM auth failed: %v", err)
+		errJSON(w, http.StatusUnauthorized, "iam auth failed")
+		return
+	}
+
+	// Find or create local user
+	user, err := a.st.GetUserByUID(r.Context(), iamUser.UserID)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if user == nil {
+		// First login — auto-create local user
+		user = &nova.User{
+			UID:  iamUser.UserID,
+			Name: iamUser.RealName,
+			Dept: iamUser.OrgName,
+		}
+		if err := a.st.CreateUser(r.Context(), user); err != nil {
+			log.Printf("create user from IAM: %v", err)
+			errJSON(w, http.StatusInternalServerError, "create user failed")
+			return
+		}
+		log.Printf("IAM user auto-created: %s (%s)", iamUser.UserID, iamUser.RealName)
+	} else {
+		// Update existing user info from IAM
+		user.Name = iamUser.RealName
+		user.Dept = iamUser.OrgName
+		if err := a.st.UpdateUser(r.Context(), user); err != nil {
+			log.Printf("update user from IAM: %v", err)
+		}
 	}
 
 	token := a.generateToken(user)

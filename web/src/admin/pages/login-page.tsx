@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Loader2, LogIn } from "lucide-react";
+import { Loader2, LogIn, ExternalLink } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,16 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showLocal, setShowLocal] = useState(false);
+
+  const handleIamLogin = async () => {
+    setError(null);
+    try {
+      await auth.iamLogin();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "IAM登录失败");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,52 +55,92 @@ export function LoginPage() {
             Nova 工作流引擎
           </CardTitle>
           <CardDescription className="text-sm text-muted-foreground">
-            登录
+            {auth.iamEnabled ? "统一身份认证登录" : "登录"}
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label htmlFor="uid" className="text-sm font-medium text-foreground">
-                登录名
-              </label>
-              <Input
-                id="uid"
-                type="text"
-                placeholder="请输入登录名"
-                value={uid}
-                onChange={(e) => setUid(e.target.value)}
-                autoFocus
-                autoComplete="username"
-                disabled={submitting}
-              />
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="password" className="text-sm font-medium text-foreground">
-                密码
-              </label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="请输入密码"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                disabled={submitting}
-              />
-            </div>
-
-            {error && (
-              <p className="text-sm text-red-500">{error}</p>
-            )}
-
-            <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : null}
-              {submitting ? "登录中..." : "登录"}
+        <CardContent className="space-y-4">
+          {auth.iamEnabled && !showLocal && (
+            <Button onClick={handleIamLogin} className="w-full gap-2" size="lg">
+              <ExternalLink className="h-4 w-4" />
+              IAM 统一登录
             </Button>
-          </form>
+          )}
+
+          {auth.iamEnabled && !showLocal && (
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t border-border/60" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-card px-2 text-muted-foreground">或</span>
+              </div>
+            </div>
+          )}
+
+          {auth.iamEnabled && !showLocal ? (
+            <button
+              type="button"
+              onClick={() => setShowLocal(true)}
+              className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline underline-offset-4"
+            >
+              使用本地账号登录
+            </button>
+          ) : null}
+
+          {(!auth.iamEnabled || showLocal) && (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <label htmlFor="uid" className="text-sm font-medium text-foreground">
+                  登录名
+                </label>
+                <Input
+                  id="uid"
+                  type="text"
+                  placeholder="请输入登录名"
+                  value={uid}
+                  onChange={(e) => setUid(e.target.value)}
+                  autoFocus
+                  autoComplete="username"
+                  disabled={submitting}
+                />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="password" className="text-sm font-medium text-foreground">
+                  密码
+                </label>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="请输入密码"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  disabled={submitting}
+                />
+              </div>
+
+              {error && (
+                <p className="text-sm text-red-500">{error}</p>
+              )}
+
+              <Button type="submit" className="w-full" disabled={submitting}>
+                {submitting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                {submitting ? "登录中..." : "登录"}
+              </Button>
+
+              {auth.iamEnabled && showLocal && (
+                <button
+                  type="button"
+                  onClick={() => setShowLocal(false)}
+                  className="w-full text-center text-xs text-muted-foreground hover:text-foreground underline underline-offset-4"
+                >
+                  返回 IAM 统一登录
+                </button>
+              )}
+            </form>
+          )}
         </CardContent>
       </Card>
     </div>

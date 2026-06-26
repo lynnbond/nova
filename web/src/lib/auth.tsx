@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api/v1";
+const IAM_BASE_URL = import.meta.env.VITE_IAM_BASE_URL ?? "";
 const TOKEN_KEY = "nova_token";
 
 export interface AuthUser {
@@ -14,8 +15,11 @@ interface AuthContextValue {
   token: string | null;
   loading: boolean;
   isAuthenticated: boolean;
+  iamEnabled: boolean;
   login: (uid: string, password: string) => Promise<void>;
   logout: () => void;
+  iamLogin: () => void;
+  authCallback: (csrfToken: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -110,13 +114,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const iamLogin = useCallback(async () => {
+    const origin = window.location.origin;
+    const redirectUri = encodeURIComponent(`${origin}/auth/callback`);
+    try {
+      const res = await fetch(`${IAM_BASE_URL}/iam/api/v2/login/iam/url?redirect_uri=${redirectUri}`);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      console.error("IAM login failed:", err);
+      throw new Error("无法获取IAM登录地址");
+    }
+  }, []);
+
+  const authCallback = useCallback(async (csrfToken: string) => {
+    const res = await fetch(`${API_BASE}/auth/iam`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csrf_token: csrfToken }),
+    });
+    if (!res.ok) {
+      let msg = "IAM 登录失败";
+      try { const body = await res.json(); msg = body.error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    localStorage.setItem(TOKEN_KEY, data.token);
+    setToken(data.token);
+    setUser(data.user);
+  }, []);
+
   const value: AuthContextValue = {
     user,
     token,
     loading,
     isAuthenticated: !!token && !!user,
+    iamEnabled: !!IAM_BASE_URL,
     login,
     logout,
+    iamLogin,
+    authCallback,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

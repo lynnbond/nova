@@ -5,6 +5,7 @@ import { useI18n } from "@/lib/i18n";
 import { useAuth } from "@/lib/auth";
 import { AppLayout } from "@/admin/layouts/AppLayout";
 import { WelcomePage } from "@/admin/pages/welcome-page";
+import { AuthCallbackPage } from "@/admin/pages/auth-callback";
 import { LoginPage } from "@/admin/pages/login-page";
 import { ProcessesPage } from "@/admin/pages/processes-page";
 import { ProcessDesignerPage } from "@/admin/pages/process-designer";
@@ -29,7 +30,7 @@ function ProtectedLayout() {
 
   if (!auth.isAuthenticated) {
     // Only redirect if we're not already on the login page
-    if (location.pathname !== "/login") {
+    if (location.pathname !== "/login" && location.pathname !== "/auth/callback") {
       const redirect = encodeURIComponent(location.pathname);
       return <Navigate to={`/login?redirect=${redirect}`} />;
     }
@@ -86,6 +87,11 @@ const loginRoute = createRoute({
   path: "/login",
   component: LoginPage,
 });
+const authCallbackRoute = createRoute({
+  getParentRoute: () => loginLayoutRoute,
+  path: "/auth/callback",
+  component: AuthCallbackPage,
+});
 
 // Protected routes (auth required)
 const protectedRoute = createRoute({
@@ -112,7 +118,7 @@ const outboxRoute = createRoute({ getParentRoute: () => appLayoutRoute, path: "/
 const usersRoute = createRoute({ getParentRoute: () => appLayoutRoute, path: "/users", component: UsersPage });
 
 const routeTree = rootRoute.addChildren([
-  loginLayoutRoute.addChildren([loginRoute]),
+  loginLayoutRoute.addChildren([loginRoute, authCallbackRoute]),
   protectedRoute.addChildren([
     appLayoutRoute.addChildren([
       indexRoute, welcomeRoute, processesRoute, processDesignerRoute, processNewRoute,
