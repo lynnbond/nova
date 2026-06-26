@@ -186,9 +186,9 @@ type ManRule struct {
 	ActID      string
 	BaseOn     HandlerBase
 	Policy     ManPolicy
-	SelAllowed bool     // whether handler can self-select
-	GroupSet   []string // department/team/role IDs
-	TaskAct    string   // task-based act name
+	SelAllowed bool          // whether handler can self-select
+	GroupSet   []string      // [UID, Name, UID, Name, ...] handler pairs; see DefaultHandlerResolver
+	TaskAct    string        // task-based act name
 }
 
 // ProVer represents a versioned process snapshot.
@@ -274,7 +274,8 @@ type Entity struct {
 	ID        string // UUID, portable primary key
 	Code      string // unique identifier
 	ProID     string
-	ProVer    int
+	ProVer    int    // version number (informational)
+	ProVerID  string // ProVer UUID — binds entity to the exact frozen version
 	Title     string
 	State     EntityState
 

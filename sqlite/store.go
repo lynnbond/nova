@@ -348,6 +348,12 @@ func (s *Store) migrate() error {
 	if colCount == 0 {
 		s.db.Exec(`ALTER TABLE pro_ver ADD COLUMN snapshot TEXT NOT NULL DEFAULT ''`)
 	}
+
+	// Migration: add pro_ver_id to entity table
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('entity') WHERE name = 'pro_ver_id'`).Scan(&colCount)
+	if colCount == 0 {
+		s.db.Exec(`ALTER TABLE entity ADD COLUMN pro_ver_id TEXT NOT NULL DEFAULT ''`)
+	}
 	return nil
 }
 
@@ -484,9 +490,9 @@ func (s *Store) CreateEntity(ctx context.Context, e *nova.Entity) error {
 		return fmt.Errorf("generate seq: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO entity (id, seq, code, pro_id, pro_ver, title, state, draft_uid, draft_name, draft_dept, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.Seq, e.Code, e.ProID, e.ProVer, e.Title, e.State, e.DraftUID, e.DraftName, e.DraftDept, e.ParentID, now, now)
+		`INSERT INTO entity (id, seq, code, pro_id, pro_ver, pro_ver_id, title, state, draft_uid, draft_name, draft_dept, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.Seq, e.Code, e.ProID, e.ProVer, e.ProVerID, e.Title, e.State, e.DraftUID, e.DraftName, e.DraftDept, e.ParentID, now, now)
 	if err != nil {
 		return err
 	}
@@ -497,14 +503,14 @@ func (s *Store) CreateEntity(ctx context.Context, e *nova.Entity) error {
 
 func (s *Store) GetEntity(ctx context.Context, id string) (*nova.Entity, error) {
 	return s.scanEntity(s.db.QueryRowContext(ctx,
-		`SELECT id, code, pro_id, pro_ver, title, state, draft_uid, draft_name, draft_dept,
+		`SELECT id, code, pro_id, pro_ver, pro_ver_id, title, state, draft_uid, draft_name, draft_dept,
 		        parent_id, serial_num, send_at, over_at, created_at, updated_at
 		 FROM entity WHERE id = ?`, id))
 }
 
 func (s *Store) GetEntityByCode(ctx context.Context, code string) (*nova.Entity, error) {
 	return s.scanEntity(s.db.QueryRowContext(ctx,
-		`SELECT id, code, pro_id, pro_ver, title, state, draft_uid, draft_name, draft_dept,
+		`SELECT id, code, pro_id, pro_ver, pro_ver_id, title, state, draft_uid, draft_name, draft_dept,
 		        parent_id, serial_num, send_at, over_at, created_at, updated_at
 		 FROM entity WHERE code = ?`, code))
 }
@@ -512,7 +518,7 @@ func (s *Store) GetEntityByCode(ctx context.Context, code string) (*nova.Entity,
 func (s *Store) scanEntity(row interface{ Scan(dest ...any) error }) (*nova.Entity, error) {
 	e := &nova.Entity{}
 	var sendAt, overAt, createdAt, updatedAt sql.NullString
-	err := row.Scan(&e.ID, &e.Code, &e.ProID, &e.ProVer, &e.Title, &e.State,
+	err := row.Scan(&e.ID, &e.Code, &e.ProID, &e.ProVer, &e.ProVerID, &e.Title, &e.State,
 		&e.DraftUID, &e.DraftName, &e.DraftDept,
 		&e.ParentID, &e.SerialNum, &sendAt, &overAt, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
@@ -844,7 +850,7 @@ func (s *Store) GetEntityOpinions(ctx context.Context, entityID string) ([]*nova
 
 func (s *Store) GetChildEntities(ctx context.Context, parentID string) ([]*nova.Entity, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, code, pro_id, pro_ver, title, state, draft_uid, draft_name, draft_dept,
+		`SELECT id, code, pro_id, pro_ver, pro_ver_id, title, state, draft_uid, draft_name, draft_dept,
 		        parent_id, serial_num, send_at, over_at, created_at, updated_at
 		 FROM entity WHERE parent_id = ?`, parentID)
 	if err != nil {
@@ -1369,7 +1375,7 @@ func (s *Store) GetEntityHandleLogs(ctx context.Context, entityID string) ([]*no
 // SearchEntities searches and paginates entities with optional keyword, pro_alias, and state filter.
 // Returns the matching entities and the total count (before pagination).
 func (s *Store) SearchEntities(ctx context.Context, q, proAlias string, stateFilter *int, page, limit int) ([]*nova.Entity, int, error) {
-	baseQuery := `SELECT e.id, e.code, e.pro_id, e.pro_ver, e.title, e.state,
+	baseQuery := `SELECT e.id, e.code, e.pro_id, e.pro_ver, e.pro_ver_id, e.title, e.state,
 		e.draft_uid, e.draft_name, e.draft_dept, e.parent_id, e.serial_num,
 		e.send_at, e.over_at, e.created_at, e.updated_at FROM entity e`
 	countQuery := `SELECT COUNT(*) FROM entity e`
@@ -1426,7 +1432,7 @@ func (s *Store) SearchEntities(ctx context.Context, q, proAlias string, stateFil
 
 // ListEntities lists all entities, optionally filtered by state.
 func (s *Store) ListEntities(ctx context.Context, stateFilter *int) ([]*nova.Entity, error) {
-	query := `SELECT id, code, pro_id, pro_ver, title, state,
+	query := `SELECT id, code, pro_id, pro_ver, pro_ver_id, title, state,
 		draft_uid, draft_name, draft_dept, parent_id, serial_num,
 		send_at, over_at, created_at, updated_at FROM entity`
 	var args []any
@@ -1456,7 +1462,7 @@ func (s *Store) ListEntities(ctx context.Context, stateFilter *int) ([]*nova.Ent
 // GetUserDoneEntities returns entities that the specified handler has completed.
 func (s *Store) GetUserDoneEntities(ctx context.Context, handlerUID string) ([]*nova.Entity, error) {
 	// Join through handle_log to find entities the user acted on
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT e.id, e.code, e.pro_id, e.pro_ver,
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT e.id, e.code, e.pro_id, e.pro_ver, e.pro_ver_id,
 		e.title, e.state, e.draft_uid, e.draft_name, e.draft_dept,
 		e.parent_id, e.serial_num, e.send_at, e.over_at, e.created_at, e.updated_at
 		FROM entity e
@@ -1488,7 +1494,7 @@ func scanEntity(row interface{ Scan(...any) error }) (*nova.Entity, error) {
 	var sendAt, overAt, createdAt, updatedAt sql.NullString
 	var serialNum, draftDept sql.NullString
 
-	if err := row.Scan(&e.ID, &e.Code, &e.ProID, &e.ProVer, &e.Title, &e.State,
+	if err := row.Scan(&e.ID, &e.Code, &e.ProID, &e.ProVer, &e.ProVerID, &e.Title, &e.State,
 		&e.DraftUID, &e.DraftName, &draftDept,
 		&e.ParentID, &serialNum,
 		&sendAt, &overAt, &createdAt, &updatedAt); err != nil {

@@ -136,6 +136,7 @@ func (e *Engine) CreateEntity(ctx context.Context, code, title string, handlerUI
 		Code:      code,
 		ProID:     e.pro.ID,
 		ProVer:    e.proVer.Ver,
+		ProVerID:  e.proVer.ID,
 		Title:     title,
 		State:     EntityStateDRAFT,
 		DraftUID:  handlerUID,
@@ -524,6 +525,9 @@ func (se *submitEngine) gotoManualAct(ctx context.Context, entity *Entity, curTa
 		}
 	case ManPolicySINGLE, ManPolicyEXCLUSIVE:
 		// Single handler: one task assigned to first handler
+		if len(handlerSet) == 0 {
+			return nil, fmt.Errorf("no handler resolved for act %s", link.Act.Name)
+		}
 		h := handlerSet[0]
 		task := &Task{
 			EntityID: entity.ID,
