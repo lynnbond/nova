@@ -968,6 +968,7 @@ func (s *Store) CreateAct(ctx context.Context, a *nova.Act) error {
 		a.ID, a.Seq, a.ProID, a.Name, a.Title, a.Type, a.Ver, editable, force, waiActs)
 	return err
 }
+
 // CreateLink creates a new act_link record.
 func (s *Store) CreateLink(ctx context.Context, l *nova.Link) error {
 	// act_link id is TEXT PRIMARY KEY in schema, but Link.ID is int64 in types.go

@@ -7,9 +7,9 @@ import (
 	"os"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/liyan/nova"
 	"github.com/liyan/nova/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // ─── Two seed DBs for isolation ───────────────────────────────────────────────
@@ -67,7 +67,11 @@ func seedProcesses(t *testing.T, withConcur bool) string {
 	if _, err := db.Exec(`INSERT INTO pro_ver (id, pro_id, ver, is_release) VALUES ('1', '1', 1, 1)`); err != nil {
 		t.Fatalf("seed SIMPLE ver: %v", err)
 	}
-	type act struct{ id int; name string; typ nova.ActType }
+	type act struct {
+		id   int
+		name string
+		typ  nova.ActType
+	}
 	simpleActs := []act{
 		{10, "开始", nova.ActTypeSTART},
 		{11, "起草", nova.ActTypeMANUAL},

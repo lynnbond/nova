@@ -31,17 +31,17 @@ type Engine struct {
 	store Store
 
 	// Optional components
-	hookRouter       *HookRouter
-	handlerResolver  HandlerResolver
+	hookRouter      *HookRouter
+	handlerResolver HandlerResolver
 }
 
 // EngineConfig configures an Engine instance.
 type EngineConfig struct {
-	Store            Store
-	ProAlias         string
-	ProVer           int // 0 = latest
-	HookRouter       *HookRouter
-	HandlerResolver  HandlerResolver // nil = DefaultHandlerResolver
+	Store           Store
+	ProAlias        string
+	ProVer          int // 0 = latest
+	HookRouter      *HookRouter
+	HandlerResolver HandlerResolver // nil = DefaultHandlerResolver
 }
 
 // NewEngine creates a new Engine for the given process definition.
@@ -123,17 +123,17 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 
 	return &Engine{
-		pro:              pro,
-		proVer:           proVer,
-		acts:             actsByName,
-		actsByID:         actsByID,
-		links:            links,
-		outLinks:         outLinks,
-		firstAct:         firstAct,
-		manRules:         manRules,
-		store:            cfg.Store,
-		hookRouter:       cfg.HookRouter,
-		handlerResolver:  handlerResolver,
+		pro:             pro,
+		proVer:          proVer,
+		acts:            actsByName,
+		actsByID:        actsByID,
+		links:           links,
+		outLinks:        outLinks,
+		firstAct:        firstAct,
+		manRules:        manRules,
+		store:           cfg.Store,
+		hookRouter:      cfg.HookRouter,
+		handlerResolver: handlerResolver,
 	}, nil
 }
 
@@ -254,10 +254,10 @@ func (e *Engine) Session(ctx context.Context, entityID string, handlerUID, handl
 //	sess.SubmitWith(nil)          // with form data
 //	sess.PreSubmit()              // validate without committing
 type Session struct {
-	eng        *Engine
-	ctx        context.Context
-	entity     *Entity
-	store      Store
+	eng    *Engine
+	ctx    context.Context
+	entity *Entity
+	store  Store
 
 	state      SessionState
 	submitInfo *SubmitInfo
@@ -291,16 +291,16 @@ func (s *Session) PreSubmit() (*SubmitInfo, error) {
 
 	// Read-only preview — no writes to DB
 	stater := &submitEngine{
-		session:   s,
-		store:     s.store,
-		pro:       s.eng.pro,
-		acts:      s.eng.acts,
-		actsByID:  s.eng.actsByID,
-		outLinks:  s.eng.outLinks,
-		submitInfo: &SubmitInfo{},
-		hookRouter: s.eng.hookRouter,
+		session:         s,
+		store:           s.store,
+		pro:             s.eng.pro,
+		acts:            s.eng.acts,
+		actsByID:        s.eng.actsByID,
+		outLinks:        s.eng.outLinks,
+		submitInfo:      &SubmitInfo{},
+		hookRouter:      s.eng.hookRouter,
 		handlerResolver: s.eng.handlerResolver,
-		waitMap:   make(map[string][]string),
+		waitMap:         make(map[string][]string),
 	}
 
 	// Fire BEF_SUBMIT hook for validation
@@ -362,18 +362,18 @@ func (s *Session) doSubmit(decision string, isTrue bool, taskID ...string) (*Sub
 	}
 
 	stater := &submitEngine{
-		session:   s,
-		store:     s.store,
-		pro:       s.eng.pro,
-		acts:      s.eng.acts,
-		actsByID:  s.eng.actsByID,
-		outLinks:  s.eng.outLinks,
-		decision:  decision,
-		taskID:    tid,
-		submitInfo: &SubmitInfo{},
-		hookRouter: s.eng.hookRouter,
+		session:         s,
+		store:           s.store,
+		pro:             s.eng.pro,
+		acts:            s.eng.acts,
+		actsByID:        s.eng.actsByID,
+		outLinks:        s.eng.outLinks,
+		decision:        decision,
+		taskID:          tid,
+		submitInfo:      &SubmitInfo{},
+		hookRouter:      s.eng.hookRouter,
 		handlerResolver: s.eng.handlerResolver,
-		waitMap:   make(map[string][]string),
+		waitMap:         make(map[string][]string),
 	}
 
 	var si *SubmitInfo
@@ -404,18 +404,18 @@ func (s *Session) doSubmit(decision string, isTrue bool, taskID ...string) (*Sub
 // ─── Submit Engine (internal, stateless) ──────────────────────────────────────
 
 type submitEngine struct {
-	session    *Session
-	store      Store
-	pro        *Pro
-	acts       map[string]*Act
-	actsByID   map[string]*Act
-	outLinks   map[string][]*Link
-	decision   string // decision label from submitter, used for decision_filter matching
-	submitInfo *SubmitInfo
-	taskID     string // optional – if set, enforce task ownership in execute()
-	hookRouter *HookRouter
+	session         *Session
+	store           Store
+	pro             *Pro
+	acts            map[string]*Act
+	actsByID        map[string]*Act
+	outLinks        map[string][]*Link
+	decision        string // decision label from submitter, used for decision_filter matching
+	submitInfo      *SubmitInfo
+	taskID          string // optional – if set, enforce task ownership in execute()
+	hookRouter      *HookRouter
 	handlerResolver HandlerResolver
-	waitMap    map[string][]string // per-submit local cache: actID → wait act names (replaces Act.WaitingList)
+	waitMap         map[string][]string // per-submit local cache: actID → wait act names (replaces Act.WaitingList)
 }
 
 func (se *submitEngine) execute(isTrue bool) (*SubmitInfo, error) {

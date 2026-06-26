@@ -8,13 +8,13 @@ import "context"
 type ThroughType int
 
 const (
-	ThroughBefSubmit          ThroughType = 310 // Before submit logic starts
-	ThroughBefChooseLinks     ThroughType = 320 // Before choosing next links
-	ThroughBefChooseHandler   ThroughType = 330 // Before choosing handler
-	ThroughBefSubmitCommit    ThroughType = 340 // Before submit transaction commit
-	ThroughAftSubmitCommit    ThroughType = 350 // After submit transaction commit
-	ThroughAftSubmitSuccess   ThroughType = 352 // After successful submit commit
-	ThroughAftSubmitFail      ThroughType = 354 // After failed submit commit
+	ThroughBefSubmit        ThroughType = 310 // Before submit logic starts
+	ThroughBefChooseLinks   ThroughType = 320 // Before choosing next links
+	ThroughBefChooseHandler ThroughType = 330 // Before choosing handler
+	ThroughBefSubmitCommit  ThroughType = 340 // Before submit transaction commit
+	ThroughAftSubmitCommit  ThroughType = 350 // After submit transaction commit
+	ThroughAftSubmitSuccess ThroughType = 352 // After successful submit commit
+	ThroughAftSubmitFail    ThroughType = 354 // After failed submit commit
 )
 
 // Hook defines a callback that fires at a specific point in the lifecycle.
@@ -28,15 +28,15 @@ type Hook interface {
 
 // HookFunc is a function-based Hook adapter.
 type HookFunc struct {
-	id  string
-	fn  func(ctx context.Context, through ThroughType) FeedbackStatus
+	id string
+	fn func(ctx context.Context, through ThroughType) FeedbackStatus
 }
 
 func NewHookFunc(id string, fn func(ctx context.Context, through ThroughType) FeedbackStatus) *HookFunc {
 	return &HookFunc{id: id, fn: fn}
 }
 
-func (h *HookFunc) ID() string                                          { return h.id }
+func (h *HookFunc) ID() string                                               { return h.id }
 func (h *HookFunc) Handle(ctx context.Context, t ThroughType) FeedbackStatus { return h.fn(ctx, t) }
 
 // HookRouter manages hook registration and dispatch.

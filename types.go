@@ -95,9 +95,9 @@ const (
 type ManPolicy int8
 
 const (
-	ManPolicySINGLE     ManPolicy = 10  // Single person
-	ManPolicyEXCLUSIVE  ManPolicy = 21  // Multiple, exclusive
-	ManPolicyCONCURRENT ManPolicy = 22  // Multiple, concurrent
+	ManPolicySINGLE     ManPolicy = 10 // Single person
+	ManPolicyEXCLUSIVE  ManPolicy = 21 // Multiple, exclusive
+	ManPolicyCONCURRENT ManPolicy = 22 // Multiple, concurrent
 )
 
 // LinkType defines the direction of an activity link.
@@ -123,15 +123,15 @@ const (
 
 // User represents a platform user (handler).
 type User struct {
-	Seq          int64     `json:"seq"`          // sequential number (for ordering)
-	ID           string    `json:"id"`           // UUID, portable primary key
-	UID          string    `json:"uid"`          // login name, unique (e.g. "zhangsan")
-	Name         string    `json:"name"`         // display name
-	PasswordHash string    `json:"-"`            // bcrypt hash, never exposed
+	Seq          int64     `json:"seq"`  // sequential number (for ordering)
+	ID           string    `json:"id"`   // UUID, portable primary key
+	UID          string    `json:"uid"`  // login name, unique (e.g. "zhangsan")
+	Name         string    `json:"name"` // display name
+	PasswordHash string    `json:"-"`    // bcrypt hash, never exposed
 	Email        string    `json:"email"`
 	Phone        string    `json:"phone"`
-	Dept         string    `json:"dept"`         // department
-	State        int       `json:"state"`        // 0=active, 1=disabled
+	Dept         string    `json:"dept"`  // department
+	State        int       `json:"state"` // 0=active, 1=disabled
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -153,7 +153,7 @@ type Act struct {
 	Seq          int64  // sequential number (for ordering)
 	ID           string // UUID, portable primary key
 	ProID        string
-	Name         string   // unique within process
+	Name         string // unique within process
 	Title        string
 	Type         ActType
 	Ver          int
@@ -167,11 +167,11 @@ type Act struct {
 
 // Link represents a directed edge between activities.
 type Link struct {
-	Seq       int64  // sequential number (for ordering)
-	ID        int64  // SQLite rowid, not portable
+	Seq       int64 // sequential number (for ordering)
+	ID        int64 // SQLite rowid, not portable
 	ProVerID  string
-	ActID     string  // stored in DB
-	Act       *Act    // populated at runtime
+	ActID     string // stored in DB
+	Act       *Act   // populated at runtime
 	PrevActID string
 	Title     string
 	Type      LinkType
@@ -186,9 +186,9 @@ type ManRule struct {
 	ActID      string
 	BaseOn     HandlerBase
 	Policy     ManPolicy
-	SelAllowed bool          // whether handler can self-select
-	GroupSet   []string      // [UID, Name, UID, Name, ...] handler pairs; see DefaultHandlerResolver
-	TaskAct    string        // task-based act name
+	SelAllowed bool     // whether handler can self-select
+	GroupSet   []string // [UID, Name, UID, Name, ...] handler pairs; see DefaultHandlerResolver
+	TaskAct    string   // task-based act name
 }
 
 // ProVer represents a versioned process snapshot.
@@ -278,14 +278,14 @@ func (pv *ProVer) SnapshotFirstAct() *Act {
 
 // Entity is the core business document flowing through the process.
 type Entity struct {
-	Seq       int64  // sequential number (for ordering)
-	ID        string // UUID, portable primary key
-	Code      string // unique identifier
-	ProID     string
-	ProVer    int    // version number (informational)
-	ProVerID  string // ProVer UUID — binds entity to the exact frozen version
-	Title     string
-	State     EntityState
+	Seq      int64  // sequential number (for ordering)
+	ID       string // UUID, portable primary key
+	Code     string // unique identifier
+	ProID    string
+	ProVer   int    // version number (informational)
+	ProVerID string // ProVer UUID — binds entity to the exact frozen version
+	Title    string
+	State    EntityState
 
 	DraftUID  string
 	DraftName string
@@ -294,8 +294,8 @@ type Entity struct {
 	ParentID  string // "" = no parent
 	SerialNum string
 
-	SendAt  *time.Time
-	OverAt  *time.Time
+	SendAt *time.Time
+	OverAt *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -315,7 +315,7 @@ type Task struct {
 	Handlers string // display-only, comma-separated handler names
 
 	// Concurrency control:
-	Converge int64 // act seq to converge from (for CONVERGE state)
+	Converge int64  // act seq to converge from (for CONVERGE state)
 	Waiting  string // comma-separated act names to wait for (for WAITING state)
 
 	StartAt *time.Time
@@ -327,26 +327,26 @@ type Task struct {
 
 // Todo is a handler's task assignment.
 type Todo struct {
-	Seq     int64  `json:"seq"`     // sequential number
-	ID      string `json:"id"`       // UUID
-	TaskID  string `json:"task_id"`  // UUID
+	Seq      int64  `json:"seq"`       // sequential number
+	ID       string `json:"id"`        // UUID
+	TaskID   string `json:"task_id"`   // UUID
 	EntityID string `json:"entity_id"` // UUID
-	ActID   string `json:"act_id"`   // UUID
-	ProID   string `json:"pro_id"`   // UUID
+	ActID    string `json:"act_id"`    // UUID
+	ProID    string `json:"pro_id"`    // UUID
 
-	HandlerUID   string `json:"handler_uid"`
-	HandlerName  string `json:"handler_name"`
-	SenderUID    string `json:"sender_uid"`
-	SenderName   string `json:"sender_name"`
+	HandlerUID  string `json:"handler_uid"`
+	HandlerName string `json:"handler_name"`
+	SenderUID   string `json:"sender_uid"`
+	SenderName  string `json:"sender_name"`
 
-	ActTitle     string     `json:"act_title"`
-	EntityTitle  string     `json:"entity_title"`
-	ProName      string     `json:"pro_name"`
+	ActTitle    string `json:"act_title"`
+	EntityTitle string `json:"entity_title"`
+	ProName     string `json:"pro_name"`
 
-	ArriveAt     *time.Time `json:"arrive_at"`
-	AcceptAt     *time.Time `json:"accept_at"`
-	Accepted     bool       `json:"accepted"`
-	TodoKey      string     `json:"todo_key"`
+	ArriveAt *time.Time `json:"arrive_at"`
+	AcceptAt *time.Time `json:"accept_at"`
+	Accepted bool       `json:"accepted"`
+	TodoKey  string     `json:"todo_key"`
 }
 
 // Step records the entity's movement between activities.
@@ -480,20 +480,20 @@ func CurHandler(ctx context.Context) (uid, name string, ok bool) {
 type FeedbackStatus int8
 
 const (
-	FeedbackContinue   FeedbackStatus = 0 // Continue normally
-	FeedbackAbandon    FeedbackStatus = 1 // Abandon this submission
-	FeedbackBreakdown  FeedbackStatus = 2 // Break the submission with error
+	FeedbackContinue  FeedbackStatus = 0 // Continue normally
+	FeedbackAbandon   FeedbackStatus = 1 // Abandon this submission
+	FeedbackBreakdown FeedbackStatus = 2 // Break the submission with error
 )
 
 // ─── SubmitInfo ───────────────────────────────────────────────────────────────
 
 // SubmitInfo carries the result of a submit operation.
 type SubmitInfo struct {
-	Direct       *Link
-	DestTargets  []TargetInfo
-	NewTodos     []*Todo
-	DoneTask     *Task
-	Message      string
+	Direct      *Link
+	DestTargets []TargetInfo
+	NewTodos    []*Todo
+	DoneTask    *Task
+	Message     string
 }
 
 // TargetInfo describes a destination activity and its assigned handlers.
@@ -505,9 +505,9 @@ type TargetInfo struct {
 
 // HandlerRef identifies a handler.
 type HandlerRef struct {
-	UID   string
-	Name  string
-	Dept  string
+	UID  string
+	Name string
+	Dept string
 }
 
 // HandlerResolver resolves the actual handler set for a MANUAL activity.
@@ -568,9 +568,9 @@ type FieldDef struct {
 	Type        FieldType `json:"type"`
 	Required    bool      `json:"required"`
 	Default     string    `json:"default,omitempty"`
-	Options     []string  `json:"options,omitempty"`     // for select/checkbox
+	Options     []string  `json:"options,omitempty"` // for select/checkbox
 	Placeholder string    `json:"placeholder,omitempty"`
-	AIHint      string    `json:"ai_hint,omitempty"`     // hint for LLM auto-fill
+	AIHint      string    `json:"ai_hint,omitempty"` // hint for LLM auto-fill
 	Order       int       `json:"order"`
 	MinLength   int       `json:"min_length,omitempty"`
 	MaxLength   int       `json:"max_length,omitempty"`
