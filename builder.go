@@ -196,74 +196,80 @@ func (b *ProcessBuilder) Store(ctx context.Context, s Store) (*Pro, error) {
 	if err := b.Validate(); err != nil {
 		return nil, fmt.Errorf("validate: %w", err)
 	}
-	ps, ok := s.(processStore)
-	if !ok {
-		return nil, fmt.Errorf("store does not support process creation (missing CreateProcess)")
-	}
 
-	// Create process
-	p := &Pro{Alias: b.alias, Name: b.name, Ver: 1}
-	if err := ps.CreateProcess(ctx, p); err != nil {
-		return nil, fmt.Errorf("create process: %w", err)
-	}
+	var p *Pro
+	if err := s.ExecTx(ctx, func(tx Store) error {
+		pts, ok := tx.(processStore)
+		if !ok {
+			return fmt.Errorf("transaction store does not support process creation")
+		}
 
-	// Create version
-	pv := &ProVer{ProID: p.ID, Ver: 1, IsRelease: true}
-	if err := ps.CreateProVer(ctx, pv); err != nil {
-		return nil, fmt.Errorf("create version: %w", err)
-	}
+		// Create process
+		p = &Pro{Alias: b.alias, Name: b.name, Ver: 1}
+		if err := pts.CreateProcess(ctx, p); err != nil {
+			return fmt.Errorf("create process: %w", err)
+		}
 
-	// Create activities
-	nameToID := make(map[string]string, len(b.acts))
-	for _, a := range b.acts {
-		act := &Act{
-			ProID:        p.ID,
-			Name:         a.name,
-			Title:        a.title,
-			Type:         a.typ,
-			Ver:          1,
-			Editable:     a.typ == ActTypeMANUAL,
-			ForceOpinion: a.forceOpinion,
+		// Create version
+		pv := &ProVer{ProID: p.ID, Ver: 1, IsRelease: true}
+		if err := pts.CreateProVer(ctx, pv); err != nil {
+			return fmt.Errorf("create version: %w", err)
 		}
-		if len(a.waitActs) > 0 {
-			act.WaitActs = a.waitActs
-		}
-		if err := ps.CreateAct(ctx, act); err != nil {
-			return nil, fmt.Errorf("create act %q: %w", a.name, err)
-		}
-		nameToID[a.name] = act.ID
-	}
 
-	// Create links
-	for i, l := range b.links {
-		link := &Link{
-			ProVerID:       pv.ID,
-			ActID:          nameToID[l.to],
-			PrevActID:      nameToID[l.from],
-			Title:          fmt.Sprintf("L%d", i+1),
-			Type:           LinkTypeFORWARD,
-			DecisionFilter: l.decisionFilter,
-		}
-		if err := ps.CreateLink(ctx, link); err != nil {
-			return nil, fmt.Errorf("create link %s→%s: %w", l.from, l.to, err)
-		}
-	}
-
-	// Create rules
-	for _, a := range b.acts {
-		if a.rule != nil {
-			r := &ManRule{
-				ActID:      nameToID[a.name],
-				BaseOn:     HandlerBaseChannel,
-				Policy:     a.rule.Policy,
-				SelAllowed: a.rule.SelAllowed,
-				GroupSet:   a.rule.Groups,
+		// Create activities
+		nameToID := make(map[string]string, len(b.acts))
+		for _, a := range b.acts {
+			act := &Act{
+				ProID:        p.ID,
+				Name:         a.name,
+				Title:        a.title,
+				Type:         a.typ,
+				Ver:          1,
+				Editable:     a.typ == ActTypeMANUAL,
+				ForceOpinion: a.forceOpinion,
 			}
-			if err := ps.CreateManRule(ctx, r); err != nil {
-				return nil, fmt.Errorf("create rule for %q: %w", a.name, err)
+			if len(a.waitActs) > 0 {
+				act.WaitActs = a.waitActs
+			}
+			if err := pts.CreateAct(ctx, act); err != nil {
+				return fmt.Errorf("create act %q: %w", a.name, err)
+			}
+			nameToID[a.name] = act.ID
+		}
+
+		// Create links
+		for i, l := range b.links {
+			link := &Link{
+				ProVerID:       pv.ID,
+				ActID:          nameToID[l.to],
+				PrevActID:      nameToID[l.from],
+				Title:          fmt.Sprintf("L%d", i+1),
+				Type:           LinkTypeFORWARD,
+				DecisionFilter: l.decisionFilter,
+			}
+			if err := pts.CreateLink(ctx, link); err != nil {
+				return fmt.Errorf("create link %s→%s: %w", l.from, l.to, err)
 			}
 		}
-	}
 
+		// Create man rules
+		for _, a := range b.acts {
+			if a.rule != nil {
+				r := &ManRule{
+					ActID:      nameToID[a.name],
+					BaseOn:     HandlerBaseChannel,
+					Policy:     a.rule.Policy,
+					SelAllowed: a.rule.SelAllowed,
+					GroupSet:   a.rule.Groups,
+				}
+				if err := pts.CreateManRule(ctx, r); err != nil {
+					return fmt.Errorf("create rule for %q: %w", a.name, err)
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return p, nil
 }

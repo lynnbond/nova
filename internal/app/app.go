@@ -1083,18 +1083,21 @@ func (a *App) handleGetEntity(w http.ResponseWriter, r *http.Request) {
 	}
 	if todoItems == nil { todoItems = []todoItem{} }
 
-	// Next actions
+	// Next actions — use engine for version-specific act definitions
 	var nextActs []nextActItem
-	for _, t := range tasks {
-		if t.State != nova.TaskStateOVER {
-			links, _ := a.st.GetLinksByAct(ctx, t.ActID)
-			for _, l := range links {
-				nextAct, _ := a.st.GetAct(ctx, l.ActID)
-				if nextAct != nil && nextAct.Type != nova.ActTypeSTART {
-					nextActs = append(nextActs, nextActItem{
-						ActID: nextAct.ID, ActName: nextAct.Name, ActTitle: nextAct.Title,
-						LinkID: l.ID, LinkType: int(l.Type),
-					})
+	eng, engErr := a.engineForEntity(ctx, id)
+	if engErr == nil {
+		for _, t := range tasks {
+			if t.State != nova.TaskStateOVER {
+				nextList := eng.OutLinksFor(t.ActID)
+				for _, l := range nextList {
+					nextAct := eng.ActByID(l.ActID)
+					if nextAct != nil && nextAct.Type != nova.ActTypeSTART {
+						nextActs = append(nextActs, nextActItem{
+							ActID: nextAct.ID, ActName: nextAct.Name, ActTitle: nextAct.Title,
+							LinkID: l.ID, LinkType: int(l.Type),
+						})
+					}
 				}
 			}
 		}

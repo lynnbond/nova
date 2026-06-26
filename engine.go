@@ -142,6 +142,22 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 // Pro returns the process definition.
 func (e *Engine) Pro() *Pro { return e.pro }
 
+// OutLinksFor returns outgoing links for the given act ID (from snapshot or DB).
+func (e *Engine) OutLinksFor(actID string) []*Link {
+	if e.outLinks == nil {
+		return nil
+	}
+	return e.outLinks[actID]
+}
+
+// ActByID returns the act with the given ID (from snapshot or DB).
+func (e *Engine) ActByID(id string) *Act {
+	if e.actsByID == nil {
+		return nil
+	}
+	return e.actsByID[id]
+}
+
 // FirstAct returns the first activity of the process.
 func (e *Engine) FirstAct() *Act { return e.firstAct }
 
