@@ -666,14 +666,22 @@ func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the current ProVer (draft)
-	pv, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
+	// Find the latest draft ProVer (most recent unpublished version)
+	pvs, err := a.st.ListProVers(ctx, pro.ID)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var pv *nova.ProVer
+	for _, p := range pvs {
+		if !p.IsRelease {
+			if pv == nil || p.Ver > pv.Ver {
+				pv = p
+			}
+		}
+	}
 	if pv == nil {
-		errJSON(w, http.StatusNotFound, "version not found")
+		errJSON(w, http.StatusBadRequest, "no draft version to publish")
 		return
 	}
 
@@ -688,7 +696,7 @@ func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	firstAct, err := a.st.GetFirstAct(ctx, pro.ID, pro.Ver)
+	firstAct, err := a.st.GetFirstAct(ctx, pro.ID, pv.Ver)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
@@ -724,7 +732,7 @@ func (a *App) handlePublish(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, "get pro after publish")
 		return
 	}
-	pro.Ver = pro.Ver + 1
+	pro.Ver = pv.Ver
 	if err := a.st.UpdatePro(ctx, pro); err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
@@ -833,13 +841,13 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 		return nil, 0, fmt.Errorf("validate: %w", err)
 	}
 
-	// Get existing pro_ver to know the pro_ver ID for this version
+	// Get existing pro_ver to know the pro_ver ID for this version (read-only, safe outside tx)
 	oldPv, err := a.st.GetProVer(ctx, pro.ID, pro.Ver)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get current ver: %w", err)
 	}
 
-	// Check for active entities before delete
+	// Check for active entities before delete (read-only)
 	var canDeleteOld bool
 	if oldPv != nil {
 		ents, err := a.st.GetEntitiesByProVer(ctx, oldPv.ID)
@@ -849,76 +857,83 @@ func (a *App) saveDesign(ctx context.Context, alias, name string, acts []designA
 		canDeleteOld = len(ents) == 0
 	}
 
-	// Delete old acts and links (only if no active entities)
-	if oldPv != nil && canDeleteOld {
-		if err := a.st.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
-			return nil, 0, fmt.Errorf("delete old links: %w", err)
-		}
-		if err := a.st.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
-			return nil, 0, fmt.Errorf("delete old acts: %w", err)
-		}
-	}
-
-	// Create new ProVer (draft)
-	newPv := &nova.ProVer{ProID: pro.ID, Ver: nextVer, IsRelease: false}
-	if err := a.st.CreateProVer(ctx, newPv); err != nil {
-		return nil, 0, fmt.Errorf("create version: %w", err)
-	}
-
-	// Create activities
-	nameToID := make(map[string]string, len(acts))
-	for _, act := range acts {
-		aAct := &nova.Act{
-			ProID:        pro.ID,
-			Name:         act.Name,
-			Title:        act.Title,
-			Type:         nova.ActType(act.Type),
-			Ver:          nextVer,
-			ForceOpinion: act.ForceOpinion,
-		}
-		if act.Type == int(nova.ActTypeMANUAL) {
-			aAct.Editable = true
-		}
-		if err := a.st.CreateAct(ctx, aAct); err != nil {
-			return nil, 0, fmt.Errorf("create act %q: %w", act.Name, err)
-		}
-		nameToID[act.Name] = aAct.ID
-	}
-
-	// Create links
-	for i, link := range links {
-		l := &nova.Link{
-			ProVerID:       newPv.ID,
-			ActID:          nameToID[link.To],
-			PrevActID:      nameToID[link.From],
-			Title:          fmt.Sprintf("L%d", i+1),
-			Type:           nova.LinkTypeFORWARD,
-			DecisionFilter: link.Decision,
-		}
-		if err := a.st.CreateLink(ctx, l); err != nil {
-			return nil, 0, fmt.Errorf("create link %s→%s: %w", link.From, link.To, err)
-		}
-	}
-
-	// Create man rules
-	for _, act := range acts {
-		if act.Policy > 0 {
-			r := &nova.ManRule{
-				ActID:      nameToID[act.Name],
-				BaseOn:     nova.HandlerBaseChannel,
-				Policy:     nova.ManPolicy(act.Policy),
-				SelAllowed: false,
+	// Execute all writes atomically
+	if err := a.st.ExecTx(ctx, func(tx nova.Store) error {
+		// Delete old acts and links (only if no active entities AND draft — never delete released)
+		if oldPv != nil && canDeleteOld && !oldPv.IsRelease {
+			if err := tx.DeleteLinksByProVer(ctx, oldPv.ID); err != nil {
+				return fmt.Errorf("delete old links: %w", err)
 			}
-			if err := a.st.CreateManRule(ctx, r); err != nil {
-				return nil, 0, fmt.Errorf("create rule for %q: %w", act.Name, err)
+			if err := tx.DeleteActsByProVer(ctx, oldPv.ID); err != nil {
+				return fmt.Errorf("delete old acts: %w", err)
 			}
 		}
-	}
 
-	// Update pro name only — DO NOT advance pro.Ver (draft stays unpublished)
-	pro.Name = name
-	if err := a.st.UpdatePro(ctx, pro); err != nil {
-		return nil, 0, fmt.Errorf("update pro: %w", err)
+		// Create new ProVer (draft)
+		newPv := &nova.ProVer{ProID: pro.ID, Ver: nextVer, IsRelease: false}
+		if err := tx.CreateProVer(ctx, newPv); err != nil {
+			return fmt.Errorf("create version: %w", err)
+		}
+
+		// Create activities
+		nameToID := make(map[string]string, len(acts))
+		for _, act := range acts {
+			aAct := &nova.Act{
+				ProID:        pro.ID,
+				Name:         act.Name,
+				Title:        act.Title,
+				Type:         nova.ActType(act.Type),
+				Ver:          nextVer,
+				ForceOpinion: act.ForceOpinion,
+			}
+			if act.Type == int(nova.ActTypeMANUAL) {
+				aAct.Editable = true
+			}
+			if err := tx.CreateAct(ctx, aAct); err != nil {
+				return fmt.Errorf("create act %q: %w", act.Name, err)
+			}
+			nameToID[act.Name] = aAct.ID
+		}
+
+		// Create links
+		for i, link := range links {
+			l := &nova.Link{
+				ProVerID:       newPv.ID,
+				ActID:          nameToID[link.To],
+				PrevActID:      nameToID[link.From],
+				Title:          fmt.Sprintf("L%d", i+1),
+				Type:           nova.LinkTypeFORWARD,
+				DecisionFilter: link.Decision,
+			}
+			if err := tx.CreateLink(ctx, l); err != nil {
+				return fmt.Errorf("create link %s→%s: %w", link.From, link.To, err)
+			}
+		}
+
+		// Create man rules
+		for _, act := range acts {
+			if act.Policy > 0 {
+				r := &nova.ManRule{
+					ActID:      nameToID[act.Name],
+					BaseOn:     nova.HandlerBaseChannel,
+					Policy:     nova.ManPolicy(act.Policy),
+					SelAllowed: false,
+				}
+				if err := tx.CreateManRule(ctx, r); err != nil {
+					return fmt.Errorf("create rule for %q: %w", act.Name, err)
+				}
+			}
+		}
+
+		// Update pro name only — DO NOT advance pro.Ver (draft stays unpublished)
+		pro.Name = name
+		if err := tx.UpdatePro(ctx, pro); err != nil {
+			return fmt.Errorf("update pro: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, 0, err
 	}
 
 	return pro, nextVer, nil

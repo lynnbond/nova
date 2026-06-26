@@ -26,6 +26,10 @@ type Store interface {
 	UpdatePro(ctx context.Context, p *Pro) error
 	UpdateProVerSnapshot(ctx context.Context, pv *ProVer) error
 	ListProVers(ctx context.Context, proID string) ([]*ProVer, error)
+	CreateProVer(ctx context.Context, pv *ProVer) error
+	CreateAct(ctx context.Context, a *Act) error
+	CreateLink(ctx context.Context, l *Link) error
+	CreateManRule(ctx context.Context, r *ManRule) error
 
 	// ── Entity ──────────────────────────────────────────────────────────
 

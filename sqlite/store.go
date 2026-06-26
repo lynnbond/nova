@@ -463,7 +463,7 @@ func (s *Store) GetManRule(ctx context.Context, actID string) (*nova.ManRule, er
 func (s *Store) GetFirstAct(ctx context.Context, proID string, proVer int) (*nova.Act, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, pro_id, name, title, act_type, editable, force_opinion, wait_acts
-		 FROM act WHERE pro_id = ? AND act_type = 0 ORDER BY seq LIMIT 1`, proID)
+		 FROM act WHERE pro_id = ? AND act_type = 0 AND act_ver = ? ORDER BY seq LIMIT 1`, proID, proVer)
 	a := &nova.Act{}
 	var waitActs string
 	err := row.Scan(&a.ID, &a.ProID, &a.Name, &a.Title, &a.Type, &a.Editable, &a.ForceOpinion, &waitActs)
