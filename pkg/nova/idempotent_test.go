@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/liyan/nova"
+	"github.com/liyan/nova/pkg/nova"
 )
 
 // ─── Test: Idempotent Submit ────────────────────────────────────────────────

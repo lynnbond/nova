@@ -13,7 +13,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/liyan/nova"
+	"github.com/liyan/nova/pkg/nova"
 )
 
 // Store implements nova.Store backed by SQLite.

@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/liyan/nova"
+	"github.com/liyan/nova/pkg/nova"
 	"github.com/liyan/nova/internal/iam"
 	"github.com/liyan/nova/sqlite"
 )

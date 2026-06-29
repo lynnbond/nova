@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/liyan/nova"
+	"github.com/liyan/nova/pkg/nova"
 	"github.com/liyan/nova/sqlite"
 )
 
